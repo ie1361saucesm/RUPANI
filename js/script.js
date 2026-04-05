@@ -1305,41 +1305,52 @@ function headers(nombre) {
   return H[nombre] || [];
 }
 
-function resp(data) {
+function buildResponse(data) {
   return ContentService.createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MimeType.JSON);
+    .setMimeType(ContentService.MimeType.JSON)
+    .setHeader('Access-Control-Allow-Origin', '*')
+    .setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    .setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
 function doGet(e) {
   try {
     let accion = e.parameter.action || '';
-    if (accion === 'ping') return resp({ ok: true, msg: 'RUPANI API activa' });
-    if (accion === 'pullTodo') return resp(pullTodo());
-    return resp({ error: 'Acción: ' + accion });
+    if (accion === 'ping') return buildResponse({ ok: true, msg: 'RUPANI API activa' });
+    if (accion === 'pullTodo') return buildResponse(pullTodo());
+    return buildResponse({ error: 'Acción: ' + accion });
   } catch (err) {
-    return resp({ error: err.message });
+    return buildResponse({ error: err.message });
   }
 }
 
 function doPost(e) {
   try {
-    if (!e.postData || !e.postData.contents) return resp({ error: 'Sin POST data' });
+    if (!e.postData || !e.postData.contents) return buildResponse({ error: 'Sin POST data' });
     let body = JSON.parse(e.postData.contents);
     let accion = e.parameter.action || '';
     let tipo = e.parameter.tipo || '';
     let id = e.parameter.id || '';
     
-    if (!tipo) return resp({ error: 'Falta tipo' });
+    if (!tipo) return buildResponse({ error: 'Falta tipo' });
     const tipos = { apod: 'Apoderados', est: 'Estudiantes', mat: 'Matriculas', admin: 'Admins', sim: 'Simulacros' };
     let nombre = tipos[tipo] || tipo;
     
-    if (accion.indexOf('append') === 0) return resp(appendReg(nombre, body));
-    if (accion === 'update' && id) return resp(updateReg(nombre, id, body));
-    if (accion === 'delete' && id) return resp(deleteReg(nombre, id));
-    return resp({ error: 'Acción no reconocida: ' + accion });
+    if (accion.indexOf('append') === 0) return buildResponse(appendReg(nombre, body));
+    if (accion === 'update' && id) return buildResponse(updateReg(nombre, id, body));
+    if (accion === 'delete' && id) return buildResponse(deleteReg(nombre, id));
+    return buildResponse({ error: 'Acción no reconocida: ' + accion });
   } catch (err) {
-    return resp({ error: err.message });
+    return buildResponse({ error: err.message });
   }
+}
+
+function doOptions(e) {
+  return ContentService.createTextOutput('')
+    .setMimeType(ContentService.MimeType.TEXT)
+    .setHeader('Access-Control-Allow-Origin', '*')
+    .setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    .setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
 function pullTodo() {
