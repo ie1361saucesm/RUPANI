@@ -100,60 +100,90 @@ function qv(sel) { const el = q(sel); return el ? el.value : ''; }
 const HOJA = { apod: 'Apoderados', est: 'Estudiantes', mat: 'Matriculas', admin: 'Admins', sim: 'Simulacros' };
 
 async function sheetsDelete(tipo, id) {
-  if (!DB.cfgUrl) return;
+  if (!DB.cfgUrl) return { error: 'Sin URL de Sheets' };
   try {
     const res = await fetch(DB.cfgUrl + '?action=delete&tipo=' + tipo + '&id=' + encodeURIComponent(id), { method: 'POST' });
-    const data = await res.json();
+    const text = await res.text();
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText + ' — ' + text);
+    const data = JSON.parse(text || '{}');
     if (data && data.error) {
-      console.warn('Sheets delete error:', data.error);
-      DB.cfgConectado = false;
-      return data;
+      throw new Error(data.error);
     }
     DB.cfgConectado = true;
     return data;
-  } catch (e) { console.warn('No se pudo eliminar en Sheets:', e); DB.cfgConectado = false; return { error: e.message || String(e) }; }
+  } catch (e) {
+    console.warn('No se pudo eliminar en Sheets:', e);
+    DB.cfgConectado = false;
+    DB.cfgError = e.message || String(e);
+    return { error: e.message || String(e) };
+  }
 }
 
 async function sheetsSave(tipo, row) {
-  if (!DB.cfgUrl) return;
+  if (!DB.cfgUrl) return { error: 'Sin URL de Sheets' };
   try {
     const res = await fetch(DB.cfgUrl + '?action=append&tipo=' + tipo, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(row) });
-    const data = await res.json();
+    const text = await res.text();
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText + ' — ' + text);
+    const data = JSON.parse(text || '{}');
     if (data && data.error) {
-      console.warn('Sheets append error:', data.error);
-      DB.cfgConectado = false;
-      return data;
+      throw new Error(data.error);
     }
     DB.cfgConectado = true; // Si no hay error, está conectado
     return data;
-  } catch (e) { console.warn('No se pudo guardar en Sheets:', e); DB.cfgConectado = false; return { error: e.message || String(e) }; }
+  } catch (e) {
+    console.warn('No se pudo guardar en Sheets:', e);
+    DB.cfgConectado = false;
+    DB.cfgError = e.message || String(e);
+    return { error: e.message || String(e) };
+  }
 }
 
 async function sheetsUpdate(tipo, id, row) {
-  if (!DB.cfgUrl) return;
+  if (!DB.cfgUrl) return { error: 'Sin URL de Sheets' };
   try {
     const res = await fetch(DB.cfgUrl + '?action=update&tipo=' + tipo + '&id=' + encodeURIComponent(id), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(row) });
-    const data = await res.json();
+    const text = await res.text();
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText + ' — ' + text);
+    const data = JSON.parse(text || '{}');
     if (data && data.error) {
-      console.warn('Sheets update error:', data.error);
-      DB.cfgConectado = false;
-      return data;
+      throw new Error(data.error);
     }
     DB.cfgConectado = true;
     return data;
-  } catch (e) { console.warn('No se pudo actualizar en Sheets:', e); DB.cfgConectado = false; return { error: e.message || String(e) }; }
+  } catch (e) {
+    console.warn('No se pudo actualizar en Sheets:', e);
+    DB.cfgConectado = false;
+    DB.cfgError = e.message || String(e);
+    return { error: e.message || String(e) };
+  }
 }
 
 async function sheetsSaveMaybe(tipo, row) {
-  if (DB.cfgUrl && DB.autoSync) await sheetsSave(tipo, row);
+  if (DB.cfgUrl && DB.autoSync) {
+    const result = await sheetsSave(tipo, row);
+    if (result && result.error) {
+      toast('No se guardó en Sheets: ' + result.error, 'wa');
+    }
+  }
 }
 
 async function sheetsUpdateMaybe(tipo, id, row) {
-  if (DB.cfgUrl && DB.autoSync) await sheetsUpdate(tipo, id, row);
+  if (DB.cfgUrl && DB.autoSync) {
+    const result = await sheetsUpdate(tipo, id, row);
+    if (result && result.error) {
+      toast('No se actualizó en Sheets: ' + result.error, 'wa');
+    }
+  }
 }
 
 async function sheetsDeleteMaybe(tipo, id) {
-  if (DB.cfgUrl && DB.autoSync) await sheetsDelete(tipo, id);
+  if (DB.cfgUrl && DB.autoSync) {
+    const result = await sheetsDelete(tipo, id);
+    if (result && result.error) {
+      toast('No se eliminó en Sheets: ' + result.error, 'wa');
+    }
+  }
 }
 
 async function sheetsCargarTodo() {
@@ -1241,6 +1271,12 @@ function renderConfig() {
   const conectado = DB.cfgConectado;
   const autoSync = DB.autoSync;
 
+  let errorHtml = '';
+  if (DB.cfgError) {
+    errorHtml = '<div style="margin-bottom:14px;padding:14px;border-radius:10px;background:#fee2e2;color:#991b1b;border:1px solid #fecaca;font-size:13px">';
+    errorHtml += '<strong>Error de conexión:</strong> ' + DB.cfgError + '</div>';
+  }
+
   const scriptCode = `// ═══ RUPANI · Apps Script (Modelo SIAD)
 // Borra TODO y pega esto. Luego despliega como Web App.
 
@@ -1363,6 +1399,7 @@ function deleteReg(nombre, id) {
 
   let html = '<div class="card">';
   html += '<div class="ch"><div><div class="ct">Conexión con Google Sheets</div><div class="cs">Base de datos en la nube para RUPANI</div></div>' + (conectado ? '<span class="badge b-ok">✓ Conectado</span>' : '<span class="badge b-wa">Sin conectar</span>') + '</div>';
+  html += errorHtml;
 
   // Paso 1
   html += '<div style="display:flex;gap:14px;padding:16px;background:#f8f9fe;border-radius:10px;border:1.5px solid var(--brd);margin-bottom:14px">';
