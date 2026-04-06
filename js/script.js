@@ -2,7 +2,7 @@
 // ══ BASE DE DATOS ══
 let DB = {
   admins: [
-    {id:1,nombres:"Director RUPANI",usuario:"superadmin",password:"rupani2025",email:"director@rupani.pe",esSuperAdmin:true}
+    {id:1,nombres:"Director RUPANI",usuario:"Ruben",password:"rupani2026",email:"rchilonl15@unc.edu.pe",esSuperAdmin:true}
   ],
   apods: [],
   ests:  [],
@@ -265,9 +265,7 @@ function render(){
 function renderSelector(){
   return '<div class="lw"><div class="lb">' +
     '<div style="text-align:center;margin-bottom:26px">' +
-    '<div class="le">R</div>' +
-    '<div style="font-size:26px;font-weight:900;color:var(--P);font-style:italic">RUPANI</div>' +
-    '<div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-top:3px">Grupo de Estudio</div>' +
+    '<img src="img/rupani.png" style="width:180px;height:auto;margin-bottom:1px">' +
     '</div>' +
     '<div style="font-size:13px;font-weight:700;color:var(--t2);margin-bottom:14px">¿Cómo deseas ingresar?</div>' +
     '<div class="role-card" id="role-admin"><div class="role-icon">🛡️</div><div><div class="role-title">Administrador</div><div class="role-sub">Gestiona matrículas, pagos y simulacros</div></div></div>' +
@@ -283,16 +281,13 @@ function bindSelector(){
 function renderAdminLogin(){
   return '<div class="lw"><div class="lb">' +
     '<div style="text-align:center;margin-bottom:22px">' +
-    '<div class="le">R</div>' +
-    '<div style="font-size:26px;font-weight:900;color:var(--P);font-style:italic">RUPANI</div>' +
-    '<div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-top:3px">Acceso Administrador</div>' +
+    '<img src="img/rupani.png" style="width:180px;height:auto;margin-bottom:1px">' +
     '</div>' +
     (DB.loginErr ? '<div class="alert al-no">⚠ '+DB.loginErr+'</div>' : '') +
     '<div class="fl" style="margin-bottom:12px"><label class="flabel">Usuario</label><input type="text" id="l-u" value="'+DB.loginU+'" placeholder="Tu usuario"></div>' +
     '<div class="fl" style="margin-bottom:18px"><label class="flabel">Contraseña</label><input type="password" id="l-p" placeholder="••••••"></div>' +
     '<button class="btn bp" style="width:100%;justify-content:center;margin-bottom:10px" id="btn-login">Ingresar</button>' +
     '<button class="btn bo" style="width:100%;justify-content:center" id="btn-back">← Volver</button>' +
-    '<p style="text-align:center;margin-top:13px;font-size:11.5px;color:var(--t3)">Demo: <strong>superadmin</strong> / <strong>rupani2025</strong></p>' +
     '</div></div>';
 }
 function bindAdminLogin(){
@@ -321,8 +316,7 @@ async function doAdminLogin(){
 function renderEstLogin(){
   const m=DB.estLoginMode;
   let html='<div class="est-wrap"><div class="est-login">';
-  html+='<div class="est-logo"><div class="est-em">R</div>';
-  html+='<div style="font-size:24px;font-weight:900;color:var(--P);font-style:italic">RUPANI</div>';
+  html+='<div class="est-logo"><img src="img/rupani.png" style="width:180px">';
   html+='<div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-top:3px">Portal del Estudiante</div></div>';
   html+='<div class="tabs" style="margin-bottom:18px">';
   html+='<button class="tab'+(m==='cod'?' act':'')+'" id="el-tab-cod">Código de acceso</button>';
@@ -342,8 +336,6 @@ function renderEstLogin(){
     html+='<button class="btn bp" style="width:100%;justify-content:center;margin-bottom:10px" id="btn-est-login">Ingresar</button>';
   }
   html+='<button class="btn bo" style="width:100%;justify-content:center" id="btn-est-back">← Volver</button>';
-  html+='<div style="margin-top:16px;padding:11px 13px;background:var(--Pl);border-radius:10px;font-size:12px;color:var(--P)">';
-  html+='<strong>Demo (código):</strong> EST-101 · EST-102 · EST-103</div>';
   html+='</div></div>';
   return html;
 }
