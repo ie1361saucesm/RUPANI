@@ -70,7 +70,7 @@ function loadLocalDB() {
 // ══ HELPERS ══
 const meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Set', 'Oct', 'Nov', 'Dic'];
 const diasSem = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
-const fmtMes = m => { if (!m) return '-'; const [y, mo] = m.split('-'); return meses[+mo - 1] + ' ' + y; };
+const fmtMes = m => { if (!m) return '-'; const [y, mo, d] = m.split('-'); return (d ? d + ' de ' : '') + meses[+mo - 1] + ' ' + y; };
 const fmtDate = d => { if (!d) return '-'; const dt = new Date(d + 'T12:00:00'); return dt.getDate() + ' ' + meses[dt.getMonth()] + ' ' + dt.getFullYear(); };
 const hoy = () => { const n = new Date(); return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0'); };
 const hoyMes = () => { const n = new Date(); return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0'); };
@@ -726,8 +726,8 @@ function bindModal() {
 
   if (tipo === 'edit-apod') {
     q('#m-save').onclick = async () => {
-      const nom = qv('#m-nom'), dir = qv('#m-dir'), cel = qv('#m-cel'), cor = qv('#m-cor');
-      if (!nom || !dir || !cel) { toast('Completa los campos obligatorios.', 'wa'); return; }
+      const nom = qv('#m-nom').trim(), dir = qv('#m-dir').trim(), cel = qv('#m-cel').trim(), cor = qv('#m-cor').trim();
+      if (!nom || !dir || !cel) { toast('⚠️ Apoderado: Nombre, Dirección y Celular son obligatorios', 'wa'); return; }
       if (datos && datos.id) {
         const a = DB.apods.find(x => x.id === datos.id);
         if (a) {
@@ -793,8 +793,9 @@ function bindModal() {
       closeModal(); render();
     });
     q('#m-save').onclick = async () => {
-      const nom = qv('#m-nom'), apodId = +qv('#m-apod'), grado = qv('#m-grado'), edad = +qv('#m-edad');
-      if (!nom || !apodId || !grado || !edad) { toast('Completa los campos obligatorios.', 'wa'); return; }
+      const nom = qv('#m-nom').trim(), apodId = +qv('#m-apod'), grado = qv('#m-grado'), edad = +qv('#m-edad');
+      if (!nom || !apodId || !grado || !edad) { toast('⚠️ Estudiante: Nombre, Apoderado, Grado y Edad son obligatorios', 'wa'); return; }
+      if (edad <= 0 || edad > 120) { toast('⚠️ Edad debe estar entre 1 y 120', 'wa'); return; }
       const cel = qv('#m-cel'), cor = qv('#m-cor');
       if (datos && datos.id) {
         const e = DB.ests.find(x => x.id === datos.id);
@@ -827,7 +828,8 @@ function bindModal() {
   else if (tipo === 'edit-mat') {
     q('#m-save').onclick = async () => {
       const num = qv('#m-num'), estId = +qv('#m-est'), monto = +qv('#m-monto'), desde = qv('#m-desde'), hasta = qv('#m-hasta'), fecha = qv('#m-fecha'), pagado = qv('#m-pag') === '1';
-      if (!estId || !monto || !desde || !hasta) { toast('Completa los campos obligatorios.', 'wa'); return; }
+      if (!estId || !monto || !desde || !hasta) { toast('⚠️ Matrícula: Estudiante, Monto, Desde y Hasta son obligatorios', 'wa'); return; }
+      if (monto <= 0) { toast('⚠️ Monto debe ser mayor a 0', 'wa'); return; }
       if (datos && datos.id) {
         const m = DB.mats.find(x => x.id === datos.id);
         if (m) {
@@ -1325,6 +1327,7 @@ function doGet(e) {
     else if (accion === 'appendEst') return responder(appendEst(datos));
     else if (accion === 'appendMat') return responder(appendMat(datos));
     else if (accion === 'appendSim') return responder(appendSim(datos));
+    else if (accion === 'delete') return responder(deleteReg(datos.tipo, datos.id));
     else if (accion === 'pullTodo') return responder(pullTodo());
     else return responder({ error: 'Accion: ' + accion });
   } catch (err) {
@@ -1510,6 +1513,22 @@ function leerHoja(nombre, mapFn) {
 function tryParse(str) {
   try { return JSON.parse(str); } catch(e) { return []; }
 }
+
+function deleteReg(tipo, id) {
+  var tiposMap = { admin: 'Admins', apod: 'Apoderados', est: 'Estudiantes', mat: 'Matriculas', sim: 'Simulacros' };
+  var nombre = tiposMap[tipo];
+  if (!nombre) return { error: 'tipo desconocido' };
+  var s = hoja(nombre);
+  if (s.getLastRow() < 2) return { ok: true };
+  var data = s.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(id)) {
+      s.deleteRow(i + 1);
+      return { ok: true };
+    }
+  }
+  return { error: 'ID no encontrado' };
+}
 `;
 
 
@@ -1640,13 +1659,13 @@ function bindView() {
     q('#mat-next') && q('#mat-next').addEventListener('click', () => {
       if (DB.matStep === 1) {
         if (DB.matApodMode === 'existente' && !DB.matApodSel) { DB.matErr = 'Selecciona un apoderado.'; render(); return; }
-        if (DB.matApodMode === 'nuevo' && (!DB.matAF.nombres || !DB.matAF.dir || !DB.matAF.cel)) { DB.matErr = 'Completa los campos obligatorios.'; render(); return; }
+        if (DB.matApodMode === 'nuevo' && (!DB.matAF.nombres.trim() || !DB.matAF.dir.trim() || !DB.matAF.cel.trim())) { DB.matErr = '⚠️ Apoderado: Completa Nombre, Dirección y Celular'; render(); return; }
       }
-      if (DB.matStep === 2 && (!DB.matEF.nombres || !DB.matEF.edad || !DB.matEF.grado)) { DB.matErr = 'Completa los campos obligatorios.'; render(); return; }
+      if (DB.matStep === 2 && (!DB.matEF.nombres.trim() || !DB.matEF.edad || !DB.matEF.grado)) { DB.matErr = '⚠️ Estudiante: Completa Nombre, Edad y Grado'; render(); return; }
       DB.matErr = ''; DB.matStep++; render();
     });
     q('#mat-save') && q('#mat-save').addEventListener('click', async () => {
-      if (!DB.matMF.monto) { DB.matErr = 'Ingresa el monto.'; render(); return; }
+      if (!DB.matMF.monto || +DB.matMF.monto <= 0) { DB.matErr = '⚠️ Monto debe ser mayor a 0'; render(); return; }
       let aid;
       if (DB.matApodMode === 'existente') { aid = +DB.matApodSel; }
       else {
