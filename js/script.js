@@ -99,37 +99,17 @@ function qv(sel) { const el = q(sel); return el ? el.value : ''; }
 // ══ GOOGLE SHEETS ══
 const HOJA = { apod: 'Apoderados', est: 'Estudiantes', mat: 'Matriculas', admin: 'Admins', sim: 'Simulacros' };
 
-async function sheetsDelete(tipo, id) {
-  if (!DB.cfgUrl) return { error: 'Sin URL de Sheets' };
-  try {
-    const res = await fetch(DB.cfgUrl + '?action=delete&tipo=' + tipo + '&id=' + encodeURIComponent(id), { method: 'POST' });
-    const text = await res.text();
-    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText + ' — ' + text);
-    const data = JSON.parse(text || '{}');
-    if (data && data.error) {
-      throw new Error(data.error);
-    }
-    DB.cfgConectado = true;
-    return data;
-  } catch (e) {
-    console.warn('No se pudo eliminar en Sheets:', e);
-    DB.cfgConectado = false;
-    DB.cfgError = e.message || String(e);
-    return { error: e.message || String(e) };
-  }
-}
-
 async function sheetsSave(tipo, row) {
   if (!DB.cfgUrl) return { error: 'Sin URL de Sheets' };
   try {
-    const res = await fetch(DB.cfgUrl + '?action=append&tipo=' + tipo, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(row) });
+    const body = { action: 'append' + tipo.charAt(0).toUpperCase() + tipo.slice(1), data: row };
+    const url = DB.cfgUrl + '?body=' + encodeURIComponent(JSON.stringify(body));
+    const res = await fetch(url);
     const text = await res.text();
-    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText + ' — ' + text);
+    if (!res.ok) throw new Error('HTTP ' + res.status + ': ' + text);
     const data = JSON.parse(text || '{}');
-    if (data && data.error) {
-      throw new Error(data.error);
-    }
-    DB.cfgConectado = true; // Si no hay error, está conectado
+    if (data && data.error) throw new Error(data.error);
+    DB.cfgConectado = true;
     return data;
   } catch (e) {
     console.warn('No se pudo guardar en Sheets:', e);
@@ -142,17 +122,37 @@ async function sheetsSave(tipo, row) {
 async function sheetsUpdate(tipo, id, row) {
   if (!DB.cfgUrl) return { error: 'Sin URL de Sheets' };
   try {
-    const res = await fetch(DB.cfgUrl + '?action=update&tipo=' + tipo + '&id=' + encodeURIComponent(id), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(row) });
+    const body = { action: 'append' + tipo.charAt(0).toUpperCase() + tipo.slice(1), data: row };
+    const url = DB.cfgUrl + '?body=' + encodeURIComponent(JSON.stringify(body));
+    const res = await fetch(url);
     const text = await res.text();
-    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText + ' — ' + text);
+    if (!res.ok) throw new Error('HTTP ' + res.status + ': ' + text);
     const data = JSON.parse(text || '{}');
-    if (data && data.error) {
-      throw new Error(data.error);
-    }
+    if (data && data.error) throw new Error(data.error);
     DB.cfgConectado = true;
     return data;
   } catch (e) {
     console.warn('No se pudo actualizar en Sheets:', e);
+    DB.cfgConectado = false;
+    DB.cfgError = e.message || String(e);
+    return { error: e.message || String(e) };
+  }
+}
+
+async function sheetsDelete(tipo, id) {
+  if (!DB.cfgUrl) return { error: 'Sin URL de Sheets' };
+  try {
+    const body = { action: 'delete', data: { tipo, id } };
+    const url = DB.cfgUrl + '?body=' + encodeURIComponent(JSON.stringify(body));
+    const res = await fetch(url);
+    const text = await res.text();
+    if (!res.ok) throw new Error('HTTP ' + res.status + ': ' + text);
+    const data = JSON.parse(text || '{}');
+    if (data && data.error) throw new Error(data.error);
+    DB.cfgConectado = true;
+    return data;
+  } catch (e) {
+    console.warn('No se pudo eliminar en Sheets:', e);
     DB.cfgConectado = false;
     DB.cfgError = e.message || String(e);
     return { error: e.message || String(e) };
@@ -195,61 +195,58 @@ async function sheetsCargarTodo() {
       await sheetsSyncUp();
     }
     // Luego, bajar datos de Sheets
-    const res = await fetch(DB.cfgUrl + '?action=pullTodo', { method: 'GET' });
+    const body = { action: 'pullTodo', data: {} };
+    const url = DB.cfgUrl + '?body=' + encodeURIComponent(JSON.stringify(body));
+    const res = await fetch(url);
     const text = await res.text();
-    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText + ' — ' + text);
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' — ' + text);
     let data; try { data = JSON.parse(text); } catch (err) { throw new Error('JSON inválido: ' + text); }
     if (data && data.error) throw new Error('Apps Script: ' + data.error);
+    
     // Solo cargar datos de Sheets si hay contenido, de lo contrario mantener datos locales
     const principal = { id: 1, nombres: "Director RUPANI", usuario: "Ruben", password: "rupani2026", email: "rchilonl15@unc.edu.pe", esSuperAdmin: true };
     if (data.admins && data.admins.length > 0) {
-      DB.admins = [principal, ...data.admins.filter(r => r.id && r.id !== 1).map(r => ({ id: r.id, nombres: r.nombres || '', usuario: r.usuario || '', password: r.password || '', email: r.email || '', esSuperAdmin: r.esSuperAdmin === true || r.esSuperAdmin === 'SI' }))];
+      DB.admins = [principal, ...data.admins.filter(r => r.id && r.id !== 1)];
     } else {
-      // Si no hay admins en Sheets, asegurar que el principal esté
       if (!DB.admins.find(a => a.id === 1)) {
         DB.admins.push(principal);
       }
     }
     if (data.apoderados && data.apoderados.length > 0) {
-      DB.apods = data.apoderados.filter(r => r.id).map(r => ({ id: r.id, nombres: r.nombres || '', dir: r.dir || '', cel: r.cel || '', correo: r.correo || '' }));
+      DB.apods = data.apoderados.filter(r => r.id);
     }
     if (data.estudiantes && data.estudiantes.length > 0) {
-      DB.ests = data.estudiantes.filter(r => r.id).map(r => ({ id: r.id, apodId: r.apodId || 0, nombres: r.nombres || '', edad: +r.edad || 0, grado: r.grado || '', cel: r.cel || '', correo: r.correo || '', codigo: r.codigo || '', usuario: r.usuario || '', password: r.password || '', credCreadas: r.credCreadas === true || r.credCreadas === 'SI' }));
+      DB.ests = data.estudiantes.filter(r => r.id);
     }
     if (data.matriculas && data.matriculas.length > 0) {
-      DB.mats = data.matriculas.filter(r => r.id).map(r => ({ id: r.id, num: r.num || '', estId: r.estId || 0, fecha: r.fecha || '', monto: +r.monto || 0, desde: r.desde || '', hasta: r.hasta || '', pagado: r.pagado === true || r.pagado === 'SI' }));
+      DB.mats = data.matriculas.filter(r => r.id);
     }
     if (data.simulacros && data.simulacros.length > 0) {
-      DB.sims = data.simulacros.filter(r => r.id).map(r => ({ id: r.id, titulo: r.titulo || '', fecha: r.fecha || '', total: +r.total || 200, res: (() => { try { return typeof r.res === 'string' ? JSON.parse(r.res) : (r.res || []); } catch { return []; } })() }));
+      DB.sims = data.simulacros.filter(r => r.id);
     }
     DB.cfgConectado = true;
-    saveLocalDB(); // Guardar localmente después de cargar
+    saveLocalDB();
     return true;
   } catch (e) { console.warn('Error cargando datos de Sheets:', e); DB.cfgError = e.message || String(e); DB.cfgConectado = false; return false; }
 }
 
 async function sheetsSyncUp() {
   try {
-    for (const a of DB.admins) {
-      const upd = await sheetsUpdate('admin', a.id, a);
-      if (!upd || upd.error) await sheetsSave('admin', a);
-    }
-    for (const ap of DB.apods) {
-      const upd = await sheetsUpdate('apod', ap.id, ap);
-      if (!upd || upd.error) await sheetsSave('apod', ap);
-    }
-    for (const e of DB.ests) {
-      const upd = await sheetsUpdate('est', e.id, e);
-      if (!upd || upd.error) await sheetsSave('est', e);
-    }
-    for (const m of DB.mats) {
-      const upd = await sheetsUpdate('mat', m.id, m);
-      if (!upd || upd.error) await sheetsSave('mat', m);
-    }
-    for (const s of DB.sims) {
-      const upd = await sheetsUpdate('sim', s.id, s);
-      if (!upd || upd.error) await sheetsSave('sim', s);
-    }
+    // Enviar todos los datos a Sheets usando las funciones "push"
+    const body = { action: 'pushAdmins', data: DB.admins };
+    await fetch(DB.cfgUrl + '?body=' + encodeURIComponent(JSON.stringify(body)));
+    
+    const body2 = { action: 'pushApoderados', data: DB.apods };
+    await fetch(DB.cfgUrl + '?body=' + encodeURIComponent(JSON.stringify(body2)));
+    
+    const body3 = { action: 'pushEstudiantes', data: DB.ests };
+    await fetch(DB.cfgUrl + '?body=' + encodeURIComponent(JSON.stringify(body3)));
+    
+    const body4 = { action: 'pushMatriculas', data: DB.mats };
+    await fetch(DB.cfgUrl + '?body=' + encodeURIComponent(JSON.stringify(body4)));
+    
+    const body5 = { action: 'pushSimulacros', data: DB.sims };
+    await fetch(DB.cfgUrl + '?body=' + encodeURIComponent(JSON.stringify(body5)));
   } catch (e) { console.warn('Error subiendo datos a Sheets:', e); }
 }
 
@@ -1277,136 +1274,244 @@ function renderConfig() {
     errorHtml += '<strong>Error de conexión:</strong> ' + DB.cfgError + '</div>';
   }
 
-  const scriptCode = `// ═══ RUPANI · Apps Script (Modelo SIAD)
-// Borra TODO y pega esto. Luego despliega como Web App.
+  const scriptCode = `// ══════════════════════════════════════════════════════════════
+// RUPANI — Google Apps Script v2.1 (Basado en SIAD)
+// Base de datos bidireccional — Compatible con CORS
+//
+// INSTRUCCIONES:
+// 1. Borra TODO el código anterior
+// 2. Pega este código → Guardar (Ctrl+S)
+// 3. Implementar → Nueva implementación → Aplicación web
+//    · Ejecutar como: Yo
+//    · Acceso: Cualquier persona  ← MUY IMPORTANTE
+// 4. Copia la URL y pégala en RUPANI
+// ══════════════════════════════════════════════════════════════
 
 const SS = SpreadsheetApp.getActiveSpreadsheet();
 
 function hoja(nombre) {
-  let s = SS.getSheetByName(nombre);
-  if (!s) {
-    s = SS.insertSheet(nombre);
-  }
-  const hdr = headers(nombre);
-  if (s.getLastRow() === 0 && hdr.length) {
-    s.appendRow(hdr);
-  }
+  var s = SS.getSheetByName(nombre);
+  if (!s) s = SS.insertSheet(nombre);
   return s;
 }
 
-function headers(nombre) {
-  const H = {
-    Admins:     ['id','nombres','usuario','password','email','esSuperAdmin'],
-    Apoderados: ['id','nombres','dir','cel','correo'],
-    Estudiantes:['id','apodId','nombres','edad','grado','cel','correo','codigo','usuario','password','credCreadas'],
-    Matriculas: ['id','num','estId','fecha','monto','desde','hasta','pagado'],
-    Simulacros: ['id','titulo','fecha','total','res']
-  };
-  return H[nombre] || [];
+function responder(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
-function buildResponse(data) {
-  return ContentService.createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MimeType.JSON)
-    .setHeader('Access-Control-Allow-Origin', '*')
-    .setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    .setHeader('Access-Control-Allow-Headers', 'Content-Type');
-}
-
+// ── PUNTO DE ENTRADA — GET (parámetro ?body=JSON) ──────
 function doGet(e) {
   try {
-    let accion = e.parameter.action || '';
-    if (accion === 'ping') return buildResponse({ ok: true, msg: 'RUPANI API activa' });
-    if (accion === 'pullTodo') return buildResponse(pullTodo());
-    return buildResponse({ error: 'Acción: ' + accion });
+    var bodyParam = e.parameter.body;
+    
+    if (!bodyParam) {
+      return responder({ ok: true, msg: 'RUPANI API activa ✅' });
+    }
+    
+    var body = JSON.parse(decodeURIComponent(bodyParam));
+    var accion = body.action;
+    var datos = body.data;
+    
+    if (accion === 'ping') return responder(ping());
+    else if (accion === 'pushAdmins') return responder(pushAdmins(datos));
+    else if (accion === 'pushApoderados') return responder(pushApoderados(datos));
+    else if (accion === 'pushEstudiantes') return responder(pushEstudiantes(datos));
+    else if (accion === 'pushMatriculas') return responder(pushMatriculas(datos));
+    else if (accion === 'pushSimulacros') return responder(pushSimulacros(datos));
+    else if (accion === 'appendAdmin') return responder(appendAdmin(datos));
+    else if (accion === 'appendApod') return responder(appendApod(datos));
+    else if (accion === 'appendEst') return responder(appendEst(datos));
+    else if (accion === 'appendMat') return responder(appendMat(datos));
+    else if (accion === 'appendSim') return responder(appendSim(datos));
+    else if (accion === 'pullTodo') return responder(pullTodo());
+    else return responder({ error: 'Accion: ' + accion });
   } catch (err) {
-    return buildResponse({ error: err.message });
+    return responder({ error: err.message });
   }
 }
 
 function doPost(e) {
-  try {
-    if (!e.postData || !e.postData.contents) return buildResponse({ error: 'Sin POST data' });
-    let body = JSON.parse(e.postData.contents);
-    let accion = e.parameter.action || '';
-    let tipo = e.parameter.tipo || '';
-    let id = e.parameter.id || '';
-    
-    if (!tipo) return buildResponse({ error: 'Falta tipo' });
-    const tipos = { apod: 'Apoderados', est: 'Estudiantes', mat: 'Matriculas', admin: 'Admins', sim: 'Simulacros' };
-    let nombre = tipos[tipo] || tipo;
-    
-    if (accion.indexOf('append') === 0) return buildResponse(appendReg(nombre, body));
-    if (accion === 'update' && id) return buildResponse(updateReg(nombre, id, body));
-    if (accion === 'delete' && id) return buildResponse(deleteReg(nombre, id));
-    return buildResponse({ error: 'Acción no reconocida: ' + accion });
-  } catch (err) {
-    return buildResponse({ error: err.message });
-  }
+  return doGet(e);
 }
 
-function doOptions(e) {
-  return ContentService.createTextOutput('')
-    .setMimeType(ContentService.MimeType.TEXT)
-    .setHeader('Access-Control-Allow-Origin', '*')
-    .setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    .setHeader('Access-Control-Allow-Headers', 'Content-Type');
+function ping() {
+  return { ok: true, hoja: SS.getName(), timestamp: new Date().toISOString() };
+}
+
+function pushAdmins(admins) {
+  var s = hoja('Admins');
+  s.clearContents();
+  s.appendRow(['id','nombres','usuario','password','email','esSuperAdmin']);
+  if (!admins || !admins.length) return { ok: true, enviados: 0 };
+  var filas = admins.map(function(r) {
+    return [String(r.id||''), r.nombres||'', r.usuario||'', r.password||'', r.email||'', r.esSuperAdmin ? 'SI' : 'NO'];
+  });
+  s.getRange(2, 1, filas.length, 6).setValues(filas);
+  return { ok: true, enviados: filas.length };
+}
+
+function appendAdmin(r) {
+  var s = hoja('Admins');
+  if (s.getLastRow() === 0) s.appendRow(['id','nombres','usuario','password','email','esSuperAdmin']);
+  s.appendRow([String(r.id||''), r.nombres||'', r.usuario||'', r.password||'', r.email||'', r.esSuperAdmin ? 'SI' : 'NO']);
+  return { ok: true };
+}
+
+function pushApoderados(apods) {
+  var s = hoja('Apoderados');
+  s.clearContents();
+  s.appendRow(['id','nombres','dir','cel','correo']);
+  if (!apods || !apods.length) return { ok: true, enviados: 0 };
+  var filas = apods.map(function(r) {
+    return [String(r.id||''), r.nombres||'', r.dir||'', r.cel||'', r.correo||''];
+  });
+  s.getRange(2, 1, filas.length, 5).setValues(filas);
+  return { ok: true, enviados: filas.length };
+}
+
+function appendApod(r) {
+  var s = hoja('Apoderados');
+  if (s.getLastRow() === 0) s.appendRow(['id','nombres','dir','cel','correo']);
+  s.appendRow([String(r.id||''), r.nombres||'', r.dir||'', r.cel||'', r.correo||'']);
+  return { ok: true };
+}
+
+function pushEstudiantes(ests) {
+  var s = hoja('Estudiantes');
+  s.clearContents();
+  s.appendRow(['id','apodId','nombres','edad','grado','cel','correo','codigo','usuario','password','credCreadas']);
+  if (!ests || !ests.length) return { ok: true, enviados: 0 };
+  var filas = ests.map(function(r) {
+    return [String(r.id||''), String(r.apodId||''), r.nombres||'', r.edad||'', r.grado||'', r.cel||'', r.correo||'', r.codigo||'', r.usuario||'', r.password||'', r.credCreadas ? 'SI' : 'NO'];
+  });
+  s.getRange(2, 1, filas.length, 11).setValues(filas);
+  return { ok: true, enviados: filas.length };
+}
+
+function appendEst(r) {
+  var s = hoja('Estudiantes');
+  if (s.getLastRow() === 0) s.appendRow(['id','apodId','nombres','edad','grado','cel','correo','codigo','usuario','password','credCreadas']);
+  s.appendRow([String(r.id||''), String(r.apodId||''), r.nombres||'', r.edad||'', r.grado||'', r.cel||'', r.correo||'', r.codigo||'', r.usuario||'', r.password||'', r.credCreadas ? 'SI' : 'NO']);
+  return { ok: true };
+}
+
+function pushMatriculas(mats) {
+  var s = hoja('Matriculas');
+  s.clearContents();
+  s.appendRow(['id','num','estId','fecha','monto','desde','hasta','pagado']);
+  if (!mats || !mats.length) return { ok: true, enviados: 0 };
+  var filas = mats.map(function(r) {
+    return [String(r.id||''), r.num||'', String(r.estId||''), r.fecha||'', r.monto||'', r.desde||'', r.hasta||'', r.pagado ? 'SI' : 'NO'];
+  });
+  s.getRange(2, 1, filas.length, 8).setValues(filas);
+  return { ok: true, enviados: filas.length };
+}
+
+function appendMat(r) {
+  var s = hoja('Matriculas');
+  if (s.getLastRow() === 0) s.appendRow(['id','num','estId','fecha','monto','desde','hasta','pagado']);
+  s.appendRow([String(r.id||''), r.num||'', String(r.estId||''), r.fecha||'', r.monto||'', r.desde||'', r.hasta||'', r.pagado ? 'SI' : 'NO']);
+  return { ok: true };
+}
+
+function pushSimulacros(sims) {
+  var s = hoja('Simulacros');
+  s.clearContents();
+  s.appendRow(['id','titulo','fecha','total','res']);
+  if (!sims || !sims.length) return { ok: true, enviados: 0 };
+  var filas = sims.map(function(r) {
+    return [String(r.id||''), r.titulo||'', r.fecha||'', r.total||'', JSON.stringify(r.res||[])];
+  });
+  s.getRange(2, 1, filas.length, 5).setValues(filas);
+  return { ok: true, enviados: filas.length };
+}
+
+function appendSim(r) {
+  var s = hoja('Simulacros');
+  if (s.getLastRow() === 0) s.appendRow(['id','titulo','fecha','total','res']);
+  s.appendRow([String(r.id||''), r.titulo||'', r.fecha||'', r.total||'', JSON.stringify(r.res||[])]);
+  return { ok: true };
 }
 
 function pullTodo() {
   return {
-    admins: leerHoja('Admins'),
-    apoderados: leerHoja('Apoderados'),
-    estudiantes: leerHoja('Estudiantes'),
-    matriculas: leerHoja('Matriculas'),
-    simulacros: leerHoja('Simulacros')
+    admins: leerAdmins(),
+    apoderados: leerApoderados(),
+    estudiantes: leerEstudiantes(),
+    matriculas: leerMatriculas(),
+    simulacros: leerSimulacros()
   };
 }
 
-function leerHoja(nombre) {
-  let s = hoja(nombre);
-  if (s.getLastRow() < 2) return [];
-  let data = s.getDataRange().getValues();
-  let hdrs = data[0];
-  return data.slice(1).filter(r => r[0]).map(r => {
-    let obj = {}; hdrs.forEach((h, i) => obj[h] = r[i] || '');
-    return obj;
+function leerAdmins() {
+  return leerHoja('Admins', function(r) {
+    return {
+      id: Number(r['id'])||0, nombres: r['nombres']||'', usuario: r['usuario']||'', 
+      password: r['password']||'', email: r['email']||'', esSuperAdmin: r['esSuperAdmin']==='SI'
+    };
   });
 }
 
-function appendReg(nombre, data) {
-  let s = hoja(nombre);
-  let hdrs = headers(nombre);
-  let row = hdrs.map(h => data[h] || '');
-  s.appendRow(row);
-  return { ok: true };
+function leerApoderados() {
+  return leerHoja('Apoderados', function(r) {
+    return {
+      id: Number(r['id'])||0, nombres: r['nombres']||'', dir: r['dir']||'', 
+      cel: r['cel']||'', correo: r['correo']||''
+    };
+  });
 }
 
-function updateReg(nombre, id, data) {
-  let s = hoja(nombre);
-  let rows = s.getDataRange().getValues();
-  let hdrs = headers(nombre);
-  for (let i = 1; i < rows.length; i++) {
-    if (String(rows[i][0]) === String(id)) {
-      let row = hdrs.map((h, j) => data[h] !== undefined ? data[h] : rows[i][j] || '');
-      s.getRange(i + 1, 1, 1, row.length).setValues([row]);
-      return { ok: true };
-    }
-  }
-  return { error: 'ID no encontrado' };
+function leerEstudiantes() {
+  return leerHoja('Estudiantes', function(r) {
+    return {
+      id: Number(r['id'])||0, apodId: Number(r['apodId'])||0, nombres: r['nombres']||'', 
+      edad: Number(r['edad'])||0, grado: r['grado']||'', cel: r['cel']||'', correo: r['correo']||'',
+      codigo: r['codigo']||'', usuario: r['usuario']||'', password: r['password']||'', 
+      credCreadas: r['credCreadas']==='SI'
+    };
+  });
 }
 
-function deleteReg(nombre, id) {
-  let s = hoja(nombre);
-  let rows = s.getDataRange().getValues();
-  for (let i = 1; i < rows.length; i++) {
-    if (String(rows[i][0]) === String(id)) {
-      s.deleteRow(i + 1);
-      return { ok: true };
-    }
-  }
-  return { error: 'ID no encontrado' };
-}`;
+function leerMatriculas() {
+  return leerHoja('Matriculas', function(r) {
+    return {
+      id: Number(r['id'])||0, num: r['num']||'', estId: Number(r['estId'])||0, 
+      fecha: r['fecha']||'', monto: Number(r['monto'])||0, desde: r['desde']||'', 
+      hasta: r['hasta']||'', pagado: r['pagado']==='SI'
+    };
+  });
+}
+
+function leerSimulacros() {
+  return leerHoja('Simulacros', function(r) {
+    return {
+      id: Number(r['id'])||0, titulo: r['titulo']||'', fecha: r['fecha']||'', 
+      total: Number(r['total'])||200, res: tryParse(r['res']||'[]')
+    };
+  });
+}
+
+function leerHoja(nombre, mapFn) {
+  var s = SS.getSheetByName(nombre);
+  if (!s || s.getLastRow() < 2) return [];
+  var data = s.getDataRange().getValues();
+  var headers = data[0];
+  return data.slice(1).filter(function(row) {
+    return row.some(function(v) { return v !== ''; });
+  }).map(function(row) {
+    var obj = {};
+    headers.forEach(function(h, i) { obj[String(h)] = row[i]!==undefined ? String(row[i]) : ''; });
+    return mapFn ? mapFn(obj) : obj;
+  });
+}
+
+function tryParse(str) {
+  try { return JSON.parse(str); } catch(e) { return []; }
+}
+`;
+
 
   let html = '<div class="card">';
   html += '<div class="ch"><div><div class="ct">Conexión con Google Sheets</div><div class="cs">Base de datos en la nube para RUPANI</div></div>' + (conectado ? '<span class="badge b-ok">✓ Conectado</span>' : '<span class="badge b-wa">Sin conectar</span>') + '</div>';
@@ -1432,8 +1537,8 @@ function deleteReg(nombre, id) {
   html += '<div style="display:flex;gap:14px;padding:16px;background:#f8f9fe;border-radius:10px;border:1.5px solid var(--brd);margin-bottom:14px">';
   html += '<div style="width:32px;height:32px;background:var(--P);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;flex-shrink:0">3</div>';
   html += '<div style="flex:1"><div style="font-weight:700;font-size:13.5px;margin-bottom:4px">Desplegar como aplicación web</div>';
-  html += '<div style="font-size:12.5px;color:var(--t2);line-height:1.7">En Apps Script: <strong>Implementar → Nueva implementación → Aplicación web</strong><br>· Ejecutar como: <strong>Yo</strong> &nbsp;·&nbsp; Acceso: <strong>Cualquier usuario</strong></div>';
-  html += '<div class="fl" style="margin-top:10px;max-width:500px"><label class="flabel">URL del Web App</label><input type="text" id="cfg-url-inp" value="' + (url || '') + '" placeholder="https://script.google.com/macros/s/AKfyc.../exec"></div>';
+  html += '<div style="font-size:12.5px;color:var(--t2);line-height:1.7">En Apps Script: <strong>Implementar → Nueva implementación → Aplicación web</strong><br>· Ejecutar como: <strong>Yo</strong> &nbsp;·&nbsp; Acceso: <strong>Cualquier usuario</strong><br><br><strong style="color:var(--t1)">⚠️ MUY IMPORTANTE:</strong> Después de desplegar, <strong>BORRA el despliegue anterior</strong> (si existe) y crea uno <strong>NUEVO</strong>. Copia la URL azul que aparece (debe terminar en <strong>/exec</strong>).</div>';
+  html += '<div class="fl" style="margin-top:10px;max-width:500px"><label class="flabel">URL del Web App (cópiala exactamente desde Apps Script)</label><input type="text" id="cfg-url-inp" value="' + (url || '') + '" placeholder="https://script.google.com/macros/s/AKfyc.../exec" style="font-size:12px;font-family:monospace"></div>';
   html += '</div></div>';
 
   // Paso 4
@@ -1441,12 +1546,21 @@ function deleteReg(nombre, id) {
   html += '<div style="width:32px;height:32px;background:' + (conectado ? 'var(--ok)' : 'var(--G)') + ';color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;flex-shrink:0">4</div>';
   html += '<div style="flex:1"><div style="font-weight:700;font-size:13.5px;margin-bottom:4px">' + (conectado ? '✓ Sistema conectado' : 'Conectar e inicializar') + '</div>';
   html += '<div style="font-size:12.5px;color:var(--t2);line-height:1.7;margin-bottom:12px">' + (conectado ? 'Conectado a Google Sheets. Usa <strong>📥 Cargar datos ← Sheets</strong> para refrescar, o <strong>📤 Enviar datos → Sheets</strong> para subir cambios.' : 'Al hacer clic se guardará la configuración y se cargarán los datos desde Google Sheets.') + '</div>';
+  
+  // Mostrar URL en uso
+  if (url) {
+    html += '<div style="background:rgba(0,0,0,0.08);padding:10px;border-radius:6px;margin-bottom:12px;font-size:11px;font-family:monospace;word-break:break-all;color:var(--t2)"><strong>URL en uso:</strong><br>' + url + '</div>';
+  } else {
+    html += '<div style="background:rgba(255,0,0,0.1);padding:10px;border-radius:6px;margin-bottom:12px;font-size:11.5px;color:#c41c3b"><strong>⚠️ Sin URL:</strong> Pega la URL del Web App en el campo de arriba (Paso 3).</div>';
+  }
+  
   html += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">';
   html += '<button class="btn bsm ' + (autoSync ? 'bp' : 'bo') + '" id="cfg-auto-sync-btn" style="font-size:12px">' + (autoSync ? '✓ Sincronización automática activada' : '⚪ Sincronización automática') + '</button>';
   html += '<div style="flex:1;color:var(--t3);font-size:12px">Cuando está activada, los cambios se envían a Sheets automáticamente. Si está desactivada, usa los botones manuales.</div>';
   html += '</div>';
   html += '<div style="display:flex;gap:10px;flex-wrap:wrap">';
   html += '<button class="btn bp" id="cfg-save-btn" style="font-size:13px">' + (conectado ? '🔄 Reconectar' : '⚡ Guardar y conectar') + '</button>';
+  html += '<button class="btn bok bsm" id="cfg-test-btn" style="font-size:12px">🧪 Probar conexión</button>';
   if (conectado) {
     html += '<button class="btn bok bsm" id="cfg-send-btn" style="font-size:12px">📤 Enviar datos → Sheets</button>';
     html += '<button class="btn bok bsm" id="cfg-load-btn" style="font-size:12px">📥 Cargar datos ← Sheets</button>';
@@ -1582,18 +1696,29 @@ function bindView() {
       toast(DB.autoSync ? 'Sincronización automática activada.' : 'Sincronización automática desactivada.', 'ok');
       render();
     });
-    q('#cfg-save-btn') && q('#cfg-save-btn').addEventListener('click', async () => {
-      const url = qv('#cfg-url-inp').trim();
-      if (!url) { toast('Pega la URL del Web App primero.', 'wa'); return; }
-      DB.cfgUrl = url;
-      const btn = q('#cfg-save-btn'); if (btn) { btn.textContent = '⏳ Conectando...'; btn.disabled = true; }
-      toast('Conectando con Google Sheets...');
-      const ok = await sheetsCargarTodo();
-      if (ok) {
-        DB.cfgConectado = true;
-        saveLocalDB();
+    q('#cfg-test-btn') && q('#cfg-test-btn').addEventListener('click', async () => {
+      if (!DB.cfgUrl) { toast('No hay URL guardada.', 'wa'); return; }
+      const btn = q('#cfg-test-btn'); if (btn) { btn.textContent = '⏳ Probando...'; btn.disabled = true; }
+      toast('Probando conexión con Google Sheets...');
+      try {
+        const body = { action: 'ping', data: {} };
+        const url = DB.cfgUrl + '?body=' + encodeURIComponent(JSON.stringify(body));
+        const res = await fetch(url);
+        const text = await res.text();
+        if (!res.ok) throw new Error('HTTP ' + res.status + ': ' + text);
+        const data = JSON.parse(text);
+        if (data.ok) {
+          toast('✓ Conexión exitosa: ' + data.msg, 'ok');
+          DB.cfgConectado = true;
+          DB.cfgError = '';
+        } else {
+          throw new Error('Respuesta inválida: ' + text);
+        }
+      } catch (e) {
+        toast('❌ Error de conexión: ' + e.message, 'no');
+        DB.cfgConectado = false;
+        DB.cfgError = e.message;
       }
-      toast(ok ? '✓ Conectado y datos cargados.' : 'Conexión guardada, pero no se pudieron cargar datos. Verifica la URL y permisos.', ok ? 'ok' : 'wa');
       render();
     });
     q('#cfg-send-btn') && q('#cfg-send-btn').addEventListener('click', async () => {
