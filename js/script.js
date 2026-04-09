@@ -2,11 +2,12 @@
 // ══ BASE DE DATOS ══
 let DB = {
   admins: [
-    { id: 1, nombres: "Director RUPANI", usuario: "Ruben", password: "rupani2026", email: "rchilonl15@unc.edu.pe", esSuperAdmin: true }
+    { id: 1, nombres: "Director RUPANI", usuario: "superadmin", password: "rupani2025", email: "director@rupani.pe", esSuperAdmin: true }
   ],
   apods: [],
   ests: [],
-  mats: [],
+  mats: [],   // matrícula única por estudiante
+  cuotas: [],   // pagos/cuotas por fecha {id,matId,fecha,monto,pagado,obs}
   sims: [],
   screen: 'selector',
   session: null,
@@ -16,10 +17,11 @@ let DB = {
   matStep: 1, matApodMode: 'nuevo', matApodSel: '',
   matAF: { nombres: '', dir: '', cel: '', correo: '' },
   matEF: { nombres: '', edad: '', grado: '', cel: '', correo: '' },
-  matMF: { num: '', fecha: '', monto: '', desde: '', hasta: '' },
+  matMF: { num: '', fecha: '', monto: '', desde: '', hasta: '', pagado: false },
   matErr: '',
   busqTipo: 'est', busqQ: '', busqSel: null,
   pagoFiltro: 'todos',
+  cuotaModal: null,   // {matId} para agregar cuota
   simSel: null, simScores: {}, simNuevoPanel: false,
   simNF: { titulo: '', fecha: '', total: 200 },
   cfgUrl: '', cfgSsId: '', cfgConectado: false,
@@ -34,9 +36,33 @@ let DB = {
 
 // ══ HELPERS ══
 const meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Set', 'Oct', 'Nov', 'Dic'];
+const mesesL = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Setiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 const diasSem = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
-const fmtMes = m => { if (!m) return '-'; const [y, mo] = m.split('-'); return meses[+mo - 1] + ' ' + y; };
-const fmtDate = d => { if (!d) return '-'; const dt = new Date(d + 'T12:00:00'); return dt.getDate() + ' ' + meses[dt.getMonth()] + ' ' + dt.getFullYear(); };
+// Mes+Año para periodos (desde/hasta) → "Abr 2025"
+const fmtMes = m => {
+  if (!m) return '-';
+  const p = m.split('-');
+  if (p.length === 3) return fmtDate(m);          // tiene día → mostrar completo
+  return meses[+(p[1] || 1) - 1] + ' ' + p[0];           // solo YYYY-MM → Mes Año
+};
+// Fecha completa YYYY-MM-DD → "14 Abr 2025"
+const fmtDate = d => {
+  if (!d) return '-';
+  const p = d.split('-');
+  if (p.length === 3) {
+    const [y, mo, da] = p;
+    return da + ' ' + meses[+mo - 1] + ' ' + y;
+  }
+  // fallback si viene como YYYY-MM
+  return fmtMes(d);
+};
+// Fecha larga → "Lunes 14 de Abril 2025"
+const fmtDateL = d => {
+  if (!d || d.length < 10) return fmtDate(d);
+  const dt = new Date(d + 'T12:00:00');
+  const dias = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+  return dias[dt.getDay()] + ' ' + dt.getDate() + ' de ' + mesesL[dt.getMonth()] + ' ' + dt.getFullYear();
+};
 const hoy = () => { const n = new Date(); return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0'); };
 const hoyMes = () => { const n = new Date(); return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0'); };
 const anioActual = () => new Date().getFullYear();
@@ -47,6 +73,15 @@ const fechaHoraTexto = () => {
 const nid = () => Date.now() + Math.floor(Math.random() * 1000);
 const getEst = id => DB.ests.find(e => e.id === id) || { nombres: '—', grado: '—' };
 const getApod = id => DB.apods.find(a => a.id === id) || { nombres: '—', cel: '—', correo: '', dir: '' };
+const getMat = estId => DB.mats.find(m => m.estId === estId) || null;
+const getCuotas = matId => DB.cuotas.filter(q => q.matId === matId);
+// Cuotas de un estudiante
+const getCuotasEst = estId => { const m = getMat(estId); return m ? getCuotas(m.id) : []; };
+// Deuda: cuotas no pagadas
+const tieneDeuda = estId => getCuotasEst(estId).some(q => !q.pagado);
+// Total pagado de una matrícula
+const totalPagado = matId => getCuotas(matId).filter(q => q.pagado).reduce((s, q) => s + q.monto, 0);
+const totalDeuda = matId => getCuotas(matId).filter(q => !q.pagado).reduce((s, q) => s + q.monto, 0);
 const grados = ['1ro Primaria', '2do Primaria', '3ro Primaria', '4to Primaria', '5to Primaria', '6to Primaria', '1ro Secundaria', '2do Secundaria', '3ro Secundaria', '4to Secundaria', '5to Secundaria'];
 
 function toast(msg, type = 'ok') {
@@ -156,6 +191,13 @@ async function pullTodo() {
       monto: +r.monto || 0, desde: r.desde || '', hasta: r.hasta || '',
       pagado: r.pagado === 'SI' || r.pagado === true || r.pagado === 'true'
     }));
+    if (res.cuotas && res.cuotas.length) {
+      DB.cuotas = res.cuotas.map(r => ({
+        id: +r.id || r.id, matId: +r.matId || r.matId, fecha: r.fecha || '',
+        monto: +r.monto || 0, pagado: r.pagado === 'SI' || r.pagado === true || r.pagado === 'true',
+        obs: r.obs || ''
+      }));
+    }
   }
   // Simulacros
   if (res.sims && res.sims.length) {
@@ -176,7 +218,9 @@ async function pushTodo() {
   const ok1 = await apiCall('pushAdmins', DB.admins.map(a => ({ id: String(a.id), nombres: a.nombres, usuario: a.usuario, password: a.password, email: a.email || '', esSuperAdmin: a.esSuperAdmin ? 'SI' : 'NO' })));
   const ok2 = await apiCall('pushApods', DB.apods.map(a => ({ id: String(a.id), nombres: a.nombres, dir: a.dir, cel: a.cel, correo: a.correo || '' })));
   const ok3 = await apiCall('pushEsts', DB.ests.map(e => ({ id: String(e.id), apodId: String(e.apodId), nombres: e.nombres, edad: String(e.edad), grado: e.grado, cel: e.cel || '', correo: e.correo || '', codigo: e.codigo, usuario: e.usuario || '', password: e.password || '', credCreadas: e.credCreadas ? 'SI' : 'NO' })));
-  const ok4 = await apiCall('pushMats', DB.mats.map(m => ({ id: String(m.id), num: m.num, estId: String(m.estId), fecha: m.fecha, monto: String(m.monto), desde: m.desde, hasta: m.hasta, pagado: m.pagado ? 'SI' : 'NO' })));
+  const ok4a = await apiCall('pushMats', DB.mats.map(m => ({ id: String(m.id), num: m.num, estId: String(m.estId), fecha: m.fecha, monto: String(m.monto || 0), desde: m.desde || '', hasta: m.hasta || '', pagado: m.pagado ? 'SI' : 'NO' })));
+  const ok4b = await apiCall('pushCuotas', DB.cuotas.map(q => ({ id: String(q.id), matId: String(q.matId), fecha: q.fecha, monto: String(q.monto), pagado: q.pagado ? 'SI' : 'NO', obs: q.obs || '' })));
+  const ok4 = ok4a || ok4b;
   const ok5 = await apiCall('pushSims', DB.sims.map(s => ({ id: String(s.id), titulo: s.titulo, fecha: s.fecha, total: String(s.total), resultados: JSON.stringify(s.res) })));
   return !!(ok1 || ok2 || ok3 || ok4 || ok5);
 }
@@ -205,10 +249,10 @@ async function syncEstDelete(id) {
 }
 
 async function syncMatNueva(m) {
-  await apiCall('appendMat', { id: String(m.id), num: m.num, estId: String(m.estId), fecha: m.fecha, monto: String(m.monto), desde: m.desde, hasta: m.hasta, pagado: m.pagado ? 'SI' : 'NO' });
+  await apiCall('appendMat', { id: String(m.id), num: m.num, estId: String(m.estId), fecha: m.fecha, monto: String(m.monto || 0), desde: m.desde || '', hasta: m.hasta || '', pagado: m.pagado ? 'SI' : 'NO' });
 }
 async function syncMatUpdate(m) {
-  await apiCall('updateMat', { id: String(m.id), num: m.num, estId: String(m.estId), fecha: m.fecha, monto: String(m.monto), desde: m.desde, hasta: m.hasta, pagado: m.pagado ? 'SI' : 'NO' });
+  await apiCall('updateMat', { id: String(m.id), num: m.num, estId: String(m.estId), fecha: m.fecha, monto: String(m.monto || 0), desde: m.desde || '', hasta: m.hasta || '', pagado: m.pagado ? 'SI' : 'NO' });
 }
 async function syncMatDelete(id) {
   await apiCall('deleteMat', { id: String(id) });
@@ -223,6 +267,12 @@ async function syncSimUpdate(s) {
 async function syncSimDelete(id) {
   await apiCall('deleteSim', { id: String(id) });
 }
+
+// ── Cuotas sync ──────────────────────────────────────────────
+async function syncCuotaNueva(q) { await apiCall('appendCuota', { id: String(q.id), matId: String(q.matId), fecha: q.fecha, monto: String(q.monto), pagado: q.pagado ? 'SI' : 'NO', obs: q.obs || '' }); }
+async function syncCuotaUpdate(q) { await apiCall('updateCuota', { id: String(q.id), matId: String(q.matId), fecha: q.fecha, monto: String(q.monto), pagado: q.pagado ? 'SI' : 'NO', obs: q.obs || '' }); }
+async function syncCuotaDelete(id) { await apiCall('deleteCuota', { id: String(id) }); }
+async function syncMatUpdate2(m) { await apiCall('updateMat', { id: String(m.id), num: m.num, estId: String(m.estId), fecha: m.fecha, monto: String(m.monto || 0), desde: m.desde || '', hasta: m.hasta || '', pagado: m.pagado ? 'SI' : 'NO' }); }
 
 async function syncAdminUpdate(a) {
   await apiCall('updateAdmin', { id: String(a.id), nombres: a.nombres, usuario: a.usuario, password: a.password, email: a.email || '', esSuperAdmin: a.esSuperAdmin ? 'SI' : 'NO' });
@@ -248,8 +298,64 @@ async function sheetsDelete(tipo, id) { }
 async function sheetsSave(tipo, row) { }
 async function sheetsUpdate(tipo, id, row) { }
 
+
+// ══════════════════════════════════════════════════════════════
+// PERSISTENCIA DE SESIÓN — localStorage
+// Guarda: cfgUrl, cfgSsId, cfgConectado, sesión admin y estudiante
+// Al cargar: restaura sin pedir login si la sesión existe
+// ══════════════════════════════════════════════════════════════
+const LS_KEY = 'rupani_session_v2';
+
+function guardarSesion() {
+  try {
+    const estado = {
+      cfgUrl: DB.cfgUrl,
+      cfgSsId: DB.cfgSsId,
+      cfgConectado: DB.cfgConectado,
+      session: DB.session,
+      estSession: DB.estSession,
+      screen: DB.screen,
+      view: DB.view,
+      adminTab: DB.adminTab
+    };
+    localStorage.setItem(LS_KEY, JSON.stringify(estado));
+  } catch (e) { console.warn('[RUPANI] No se pudo guardar sesión:', e); }
+}
+
+function restaurarSesion() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return false;
+    const estado = JSON.parse(raw);
+    // Config Sheets siempre se restaura
+    if (estado.cfgUrl) DB.cfgUrl = estado.cfgUrl;
+    if (estado.cfgSsId) DB.cfgSsId = estado.cfgSsId;
+    if (estado.cfgConectado) DB.cfgConectado = estado.cfgConectado;
+    // Restaurar sesión admin
+    if (estado.session && estado.screen === 'admin') {
+      DB.session = estado.session;
+      DB.screen = 'admin';
+      DB.view = estado.view || 'dashboard';
+      DB.adminTab = estado.adminTab || 'apods';
+      return 'admin';
+    }
+    // Restaurar sesión estudiante
+    if (estado.estSession && estado.screen === 'est') {
+      DB.estSession = estado.estSession;
+      DB.screen = 'est';
+      return 'est';
+    }
+  } catch (e) { console.warn('[RUPANI] Error restaurando sesión:', e); }
+  return false;
+}
+
+function limpiarSesion() {
+  try { localStorage.removeItem(LS_KEY); } catch (e) { }
+}
+
 // ══ RENDER PRINCIPAL ══
 function render() {
+  guardarSesion(); // persistir siempre
   const root = document.getElementById('root');
   if (DB.screen === 'selector') { root.innerHTML = renderSelector(); bindSelector(); return; }
   if (DB.screen === 'admin-login') { root.innerHTML = renderAdminLogin(); bindAdminLogin(); return; }
@@ -265,7 +371,9 @@ function render() {
 function renderSelector() {
   return '<div class="lw"><div class="lb">' +
     '<div style="text-align:center;margin-bottom:26px">' +
-    '<img src="img/rupani.png" style="width:180px;height:auto;margin-bottom:1px">' +
+    '<div class="le">R</div>' +
+    '<div style="font-size:26px;font-weight:900;color:var(--P);font-style:italic">RUPANI</div>' +
+    '<div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-top:3px">Grupo de Estudio</div>' +
     '</div>' +
     '<div style="font-size:13px;font-weight:700;color:var(--t2);margin-bottom:14px">¿Cómo deseas ingresar?</div>' +
     '<div class="role-card" id="role-admin"><div class="role-icon">🛡️</div><div><div class="role-title">Administrador</div><div class="role-sub">Gestiona matrículas, pagos y simulacros</div></div></div>' +
@@ -281,13 +389,16 @@ function bindSelector() {
 function renderAdminLogin() {
   return '<div class="lw"><div class="lb">' +
     '<div style="text-align:center;margin-bottom:22px">' +
-    '<img src="img/rupani.png" style="width:180px;height:auto;margin-bottom:1px">' +
+    '<div class="le">R</div>' +
+    '<div style="font-size:26px;font-weight:900;color:var(--P);font-style:italic">RUPANI</div>' +
+    '<div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-top:3px">Acceso Administrador</div>' +
     '</div>' +
     (DB.loginErr ? '<div class="alert al-no">⚠ ' + DB.loginErr + '</div>' : '') +
     '<div class="fl" style="margin-bottom:12px"><label class="flabel">Usuario</label><input type="text" id="l-u" value="' + DB.loginU + '" placeholder="Tu usuario"></div>' +
     '<div class="fl" style="margin-bottom:18px"><label class="flabel">Contraseña</label><input type="password" id="l-p" placeholder="••••••"></div>' +
     '<button class="btn bp" style="width:100%;justify-content:center;margin-bottom:10px" id="btn-login">Ingresar</button>' +
     '<button class="btn bo" style="width:100%;justify-content:center" id="btn-back">← Volver</button>' +
+    '<p style="text-align:center;margin-top:13px;font-size:11.5px;color:var(--t3)">Demo: <strong>superadmin</strong> / <strong>rupani2025</strong></p>' +
     '</div></div>';
 }
 function bindAdminLogin() {
@@ -316,7 +427,8 @@ async function doAdminLogin() {
 function renderEstLogin() {
   const m = DB.estLoginMode;
   let html = '<div class="est-wrap"><div class="est-login">';
-  html += '<div class="est-logo"><img src="img/rupani.png" style="width:180px">';
+  html += '<div class="est-logo"><div class="est-em">R</div>';
+  html += '<div style="font-size:24px;font-weight:900;color:var(--P);font-style:italic">RUPANI</div>';
   html += '<div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-top:3px">Portal del Estudiante</div></div>';
   html += '<div class="tabs" style="margin-bottom:18px">';
   html += '<button class="tab' + (m === 'cod' ? ' act' : '') + '" id="el-tab-cod">Código de acceso</button>';
@@ -336,6 +448,8 @@ function renderEstLogin() {
     html += '<button class="btn bp" style="width:100%;justify-content:center;margin-bottom:10px" id="btn-est-login">Ingresar</button>';
   }
   html += '<button class="btn bo" style="width:100%;justify-content:center" id="btn-est-back">← Volver</button>';
+  html += '<div style="margin-top:16px;padding:11px 13px;background:var(--Pl);border-radius:10px;font-size:12px;color:var(--P)">';
+  html += '<strong>Demo (código):</strong> EST-101 · EST-102 · EST-103</div>';
   html += '</div></div>';
   return html;
 }
@@ -424,8 +538,10 @@ function bindEstSetup(esForzado) {
 function renderEstPanel() {
   const e = DB.estSession;
   const apod = getApod(e.apodId);
-  const mlist = DB.mats.filter(m => m.estId === e.id);
-  const deuda = mlist.some(m => !m.pagado);
+  const mat = getMat(e.id);
+  const mlist = mat ? [mat] : [];
+  const cuotasEst = mat ? getCuotas(mat.id) : [];
+  const deuda = cuotasEst.length === 0 ? true : cuotasEst.some(q => !q.pagado);
   const simResults = DB.sims.map(s => {
     const r = s.res.find(x => x.estId === e.id);
     if (!r) return null;
@@ -437,20 +553,46 @@ function renderEstPanel() {
     return { sim: s, r, pos, esTercio, pct, total: sorted.length };
   }).filter(Boolean);
 
-  const matsHTML = mlist.length === 0
-    ? '<div class="empty">Sin matrículas registradas</div>'
-    : mlist.map(m => {
-      let h = '<div class="mat-card ' + (m.pagado ? 'pagado' : 'deuda') + '">';
-      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
-      h += '<span style="font-weight:700;font-size:13.5px">' + m.num + '</span>';
-      h += '<span class="badge ' + (m.pagado ? 'b-ok' : 'b-no') + '">' + (m.pagado ? '✓ Pagado' : '⚠ Pendiente') + '</span></div>';
-      h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12.5px;color:var(--t2)">';
-      h += '<div><span style="color:var(--t3)">Periodo:</span> ' + fmtMes(m.desde) + ' → ' + fmtMes(m.hasta) + '</div>';
-      h += '<div><span style="color:var(--t3)">Monto:</span> <strong>S/ ' + m.monto + '</strong></div></div>';
-      if (!m.pagado) h += '<div style="margin-top:8px;font-size:12px;color:var(--no);font-weight:600">⚠ Pago pendiente. Comunícate con la academia.</div>';
+  const matsHTML = !mat
+    ? '<div class="empty">Sin matrícula registrada</div>'
+    : (() => {
+      const ncPag = cuotasEst.filter(q => q.pagado).length;
+      const ncDeu = cuotasEst.filter(q => !q.pagado).length;
+      const tPag = cuotasEst.filter(q => q.pagado).reduce((s, q) => s + q.monto, 0);
+      const tDeu = cuotasEst.filter(q => !q.pagado).reduce((s, q) => s + q.monto, 0);
+      let h = '<div class="mat-card ' + (deuda ? 'deuda' : 'pagado') + '">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:10px">';
+      h += '<span style="font-weight:700;font-size:13.5px">' + mat.num + '</span>';
+      h += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+      if (ncPag > 0) h += '<span class="badge b-ok" style="font-size:11px">✓ ' + ncPag + ' pagado' + (ncPag !== 1 ? 's' : '') + '</span>';
+      if (ncDeu > 0) h += '<span class="badge b-no" style="font-size:11px">⚠ ' + ncDeu + ' pendiente' + (ncDeu !== 1 ? 's' : '') + '</span>';
+      if (cuotasEst.length === 0) h += '<span class="badge b-wa" style="font-size:11px">Sin pagos</span>';
+      h += '</div></div>';
+      h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12.5px;color:var(--t2);margin-bottom:10px">';
+      h += '<div><span style="color:var(--t3)">Matrícula:</span> ' + fmtDate(mat.fecha) + '</div>';
+      h += '<div><span style="color:var(--t3)">Monto base:</span> <strong>S/ ' + mat.monto + '</strong></div>';
+      h += '<div><span style="color:var(--t3)">Periodo:</span> ' + fmtDate(mat.desde) + '</div>';
+      h += '<div><span style="color:var(--t3)">Hasta:</span> ' + fmtDate(mat.hasta) + '</div>';
+      if (tPag > 0) h += '<div><span style="color:var(--t3)">Total pagado:</span> <strong style="color:var(--ok)">S/ ' + tPag + '</strong></div>';
+      if (tDeu > 0) h += '<div><span style="color:var(--t3)">Total deuda:</span> <strong style="color:var(--no)">S/ ' + tDeu + '</strong></div>';
+      h += '</div>';
+      // Lista de pagos
+      if (cuotasEst.length > 0) {
+        h += '<div style="border-top:1px solid var(--brd);padding-top:10px">';
+        h += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--t3);margin-bottom:7px">Mis pagos registrados</div>';
+        [...cuotasEst].sort((a, b) => a.fecha.localeCompare(b.fecha)).forEach(cq => {
+          h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f0f2fa;gap:6px">';
+          h += '<span style="font-size:12.5px;font-weight:600">' + fmtDate(cq.fecha) + '</span>';
+          h += '<span style="font-size:12.5px;font-weight:700">S/ ' + cq.monto + '</span>';
+          h += '<span class="badge ' + (cq.pagado ? 'b-ok' : 'b-no') + '" style="font-size:11px">' + (cq.pagado ? '✓ Pagado' : '⏳ Pendiente') + '</span>';
+          h += '</div>';
+        });
+        h += '</div>';
+      }
+      if (deuda && cuotasEst.length > 0) h += '<div style="margin-top:10px;font-size:12px;color:var(--no);font-weight:600">⚠ Tienes pagos pendientes. Comunícate con la academia.</div>';
       h += '</div>';
       return h;
-    }).join('');
+    })();
 
   const simsHTML = simResults.length === 0
     ? '<div class="empty">Sin simulacros registrados</div>'
@@ -475,7 +617,7 @@ function renderEstPanel() {
   html += '<div class="est-info-name">' + e.nombres + '</div>';
   html += '<div class="est-info-sub">' + e.grado + ' · ' + e.edad + ' años · Código: ' + e.codigo + '</div>';
   html += '<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">';
-  html += '<span class="badge ' + (deuda ? 'b-no' : 'b-ok') + '" style="font-size:11px">' + (deuda ? '⚠ Tienes pagos pendientes' : '✓ Al día con tus pagos') + '</span>';
+  html += '<span class="badge ' + (deuda ? 'b-no' : 'b-ok') + '" style="font-size:11px">' + (deuda ? (mat ? '⚠ Pago pendiente' : 'Sin matrícula') : '✓ Al día con tus pagos') + '</span>';
   if (e.credCreadas) html += '<span style="background:rgba(255,255,255,.15);color:rgba(255,255,255,.9);font-size:11px;padding:2px 9px;border-radius:20px;font-weight:600">🔐 @' + e.usuario + '</span>';
   else html += '<span style="background:rgba(255,165,0,.25);color:#ffe08a;font-size:11px;padding:2px 9px;border-radius:20px;font-weight:600">⚠ Sin credenciales propias</span>';
   html += '</div></div>';
@@ -487,7 +629,7 @@ function renderEstPanel() {
   const datosRows = [['Nombre completo', e.nombres], ['Grado', e.grado], ['Edad', e.edad + ' años'], ['Celular', e.cel || '—'], ['Correo', e.correo || '—']];
   const apodRows2 = [['Nombres', apod.nombres], ['Celular', apod.cel || '—'], ['Correo', apod.correo || '—'], ['Dirección', apod.dir || '—']];
 
-  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px">';
+  html += '<div class="est-datos-grid">';
   html += '<div class="est-section"><div class="est-section-title">Mis datos</div>';
   html += datosRows.map(([k, v]) => '<div class="est-row"><span class="est-key">' + k + '</span><span class="est-val">' + v + '</span></div>').join('');
   html += '</div>';
@@ -501,7 +643,7 @@ function renderEstPanel() {
   return html;
 }
 function bindEstPanel() {
-  q('#est-logout').onclick = () => { DB.screen = 'selector'; DB.estSession = null; render(); };
+  q('#est-logout').onclick = () => { DB.screen = 'selector'; DB.estSession = null; limpiarSesion(); render(); };
   q('#btn-change-cred').onclick = () => {
     document.getElementById('root').innerHTML = renderEstSetup(false);
     bindEstSetup(false);
@@ -521,7 +663,7 @@ const navItems = [
 ];
 
 function renderAdminLayout() {
-  const deudas = DB.mats.filter(m => !m.pagado).length;
+  const deudas = DB.cuotas.filter(q => !q.pagado).length;
   const isSA = DB.session && DB.session.esSuperAdmin;
   const navHTML = navItems.map(n => {
     let h = '<button class="nav-btn' + (DB.view === n.v ? ' act' : '') + '" data-view="' + n.v + '">';
@@ -547,11 +689,11 @@ function renderAdminLayout() {
   html += '<div class="main">';
   html += '<div class="topbar">';
   html += '<div><div class="tb-title">' + (titles[DB.view] || '') + '</div><div class="tb-sub">RUPANI · Grupo de Estudio</div></div>';
-  html += '<div style="display:flex;align-items:center;gap:12px">';
-  html += '<div id="sync-indicator" style="padding:5px 12px;border-radius:20px;border:1px solid var(--brd);background:#f8f9fe;min-width:90px;text-align:center"></div>';
-  html += '<div style="display:flex;align-items:center;gap:7px;background:#f8f9fe;border:1px solid var(--brd);padding:6px 13px;border-radius:20px">';
-  html += '<span style="font-size:14px">🕐</span>';
-  html += '<span id="reloj-txt" style="font-size:12px;font-weight:600;color:var(--t2);white-space:nowrap">' + fechaHoraTexto() + '</span></div>';
+  html += '<div class="tb-right">';
+  html += '<div id="sync-indicator" style="padding:4px 10px;border-radius:20px;border:1px solid var(--brd);background:#f8f9fe;min-width:80px;text-align:center"></div>';
+  html += '<div style="display:flex;align-items:center;gap:6px;background:#f8f9fe;border:1px solid var(--brd);padding:5px 12px;border-radius:20px">';
+  html += '<span style="font-size:13px">🕐</span>';
+  html += '<span id="reloj-txt" style="font-size:11.5px;font-weight:600;color:var(--t2);white-space:nowrap">' + fechaHoraTexto() + '</span></div>';
   html += '<div class="tb-user"><div class="tb-dot"></div><span class="tb-name">' + (DB.session ? DB.session.nombres : '') + '</span></div>';
   html += '</div></div>';
   html += '<div class="content" id="view-content">' + content + '</div>';
@@ -564,7 +706,7 @@ function bindAdminLayout() {
   document.querySelectorAll('.nav-btn[data-view]').forEach(b => {
     b.onclick = () => { DB.view = b.dataset.view; render(); };
   });
-  q('#nav-logout').onclick = () => { DB.session = null; DB.screen = 'selector'; clearInterval(DB._clockTimer || 0); render(); };
+  q('#nav-logout').onclick = () => { DB.session = null; DB.screen = 'selector'; limpiarSesion(); clearInterval(DB._clockTimer || 0); render(); };
   clearInterval(DB._clockTimer || 0);
   DB._clockTimer = setInterval(() => { const el = document.getElementById('reloj-txt'); if (el) el.textContent = fechaHoraTexto(); }, 10000);
   actualizarIndicadorSync();
@@ -584,10 +726,10 @@ function renderModal() {
     const isNew = !datos || !datos.id;
     html = '<div class="modal-title">' + (isNew ? 'Nuevo apoderado' : 'Editar apoderado') + '<button class="modal-close" id="m-close">✕</button></div>';
     html += '<div class="fg" style="gap:14px">';
-    html += '<div class="fl fgf"><label class="flabel">Nombres completos *</label><input type="text" id="m-nom" value="' + (a.nombres || '') + '"></div>';
-    html += '<div class="fl fgf"><label class="flabel">Dirección *</label><input type="text" id="m-dir" value="' + (a.dir || '') + '"></div>';
-    html += '<div class="fl"><label class="flabel">Celular *</label><input type="text" id="m-cel" value="' + (a.cel || '') + '"></div>';
-    html += '<div class="fl"><label class="flabel">Correo</label><input type="email" id="m-cor" value="' + (a.correo || '') + '"></div>';
+    html += '<div class="fl fgf"><label class="flabel">Nombres completos *</label><input type="text" id="m-nom" value="' + (a.nombres || '') + '" placeholder="Apellidos y nombres" autocomplete="name" maxlength="100"></div>';
+    html += '<div class="fl fgf"><label class="flabel">Dirección *</label><input type="text" id="m-dir" value="' + (a.dir || '') + '" placeholder="Ej: Av. Los Álamos 123, Miraflores" maxlength="150"></div>';
+    html += '<div class="fl"><label class="flabel">Celular *</label><input type="tel" id="m-cel" value="' + (a.cel || '') + '" placeholder="Ej: 987654321" maxlength="15" pattern="[0-9+\\s]{7,15}" inputmode="tel"></div>';
+    html += '<div class="fl"><label class="flabel">Correo</label><input type="email" id="m-cor" value="' + (a.correo || '') + '" placeholder="ejemplo@correo.com" inputmode="email" autocomplete="email"></div>';
     html += '</div>';
     html += '<div style="display:flex;gap:8px;margin-top:18px"><button class="btn bp" id="m-save">✓ Guardar</button><button class="btn bo" id="m-cancel">Cancelar</button></div>';
   }
@@ -642,12 +784,12 @@ function renderModal() {
 
     html = '<div class="modal-title">' + (isNew ? 'Nuevo estudiante' : 'Editar estudiante') + '<button class="modal-close" id="m-close">✕</button></div>';
     html += '<div class="fg" style="gap:14px">';
-    html += '<div class="fl fgf"><label class="flabel">Nombres completos *</label><input type="text" id="m-nom" value="' + (e.nombres || '') + '"></div>';
+    html += '<div class="fl fgf"><label class="flabel">Nombres completos *</label><input type="text" id="m-nom" value="' + (e.nombres || '') + '" placeholder="Apellidos y nombres" autocomplete="name" maxlength="100"></div>';
     html += '<div class="fl"><label class="flabel">Apoderado *</label><select id="m-apod"><option value="">— Selecciona —</option>' + apodOpts + '</select></div>';
     html += '<div class="fl"><label class="flabel">Grado *</label><select id="m-grado"><option value="">— Selecciona —</option>' + gradOpts + '</select></div>';
-    html += '<div class="fl"><label class="flabel">Edad *</label><input type="number" id="m-edad" value="' + (e.edad || '') + '" min="5" max="25"></div>';
-    html += '<div class="fl"><label class="flabel">Celular</label><input type="text" id="m-cel" value="' + (e.cel || '') + '"></div>';
-    html += '<div class="fl"><label class="flabel">Correo</label><input type="email" id="m-cor" value="' + (e.correo || '') + '"></div>';
+    html += '<div class="fl"><label class="flabel">Edad *</label><input type="number" id="m-edad" value="' + (e.edad || '') + '" min="5" max="25" step="1" inputmode="numeric" placeholder="Ej: 15"></div>';
+    html += '<div class="fl"><label class="flabel">Celular</label><input type="tel" id="m-cel" value="' + (e.cel || '') + '" placeholder="Ej: 987654321" maxlength="15" inputmode="tel"></div>';
+    html += '<div class="fl"><label class="flabel">Correo</label><input type="email" id="m-cor" value="' + (e.correo || '') + '" placeholder="ejemplo@correo.com" inputmode="email" autocomplete="email"></div>';
     html += credBlock;
     html += '</div>';
     html += '<div style="display:flex;gap:8px;margin-top:18px"><button class="btn bp" id="m-save">✓ Guardar cambios</button><button class="btn bo" id="m-cancel">Cancelar</button></div>';
@@ -655,17 +797,22 @@ function renderModal() {
   else if (tipo === 'edit-mat') {
     const m = datos || { num: '', estId: '', fecha: '', monto: '', desde: '', hasta: '', pagado: false };
     const isNew = !datos || !datos.id;
-    const estOpts = DB.ests.map(e => '<option value="' + e.id + '"' + (m.estId == e.id ? ' selected' : '') + '>' + e.nombres + '</option>').join('');
+    const estOpts = DB.ests.map(e => {
+      if (!isNew && e.id !== m.estId) return '';
+      if (isNew && getMat(e.id)) return '';
+      return '<option value="' + e.id + '"' + (m.estId == e.id ? ' selected' : '') + '>' + e.nombres + ' (' + e.grado + ')</option>';
+    }).join('');
     const autoNum = 'MAT-' + anioActual() + '-' + String(DB.mats.length + 1).padStart(3, '0');
     html = '<div class="modal-title">' + (isNew ? 'Nueva matrícula' : 'Editar matrícula') + '<button class="modal-close" id="m-close">✕</button></div>';
+    if (isNew) html += '<div class="alert al-in" style="margin-bottom:14px">📋 Solo se muestran estudiantes sin matrícula activa.</div>';
     html += '<div class="fg" style="gap:14px">';
-    html += '<div class="fl"><label class="flabel">N° Matrícula</label><input type="text" id="m-num" value="' + (m.num || autoNum) + '"' + (datos && datos.id ? ' readonly' : '') + ' ></div>';
+    html += '<div class="fl"><label class="flabel">N° Matrícula</label><input type="text" id="m-num" value="' + (m.num || autoNum) + '" readonly></div>';
     html += '<div class="fl"><label class="flabel">Estudiante *</label><select id="m-est"><option value="">— Selecciona —</option>' + estOpts + '</select></div>';
-    html += '<div class="fl"><label class="flabel">Fecha de registro</label><input type="date" id="m-fecha" value="' + (m.fecha || hoy()) + '"></div>';
-    html += '<div class="fl"><label class="flabel">Monto (S/) *</label><input type="number" id="m-monto" value="' + (m.monto || '') + '"></div>';
-    html += '<div class="fl"><label class="flabel">Paga desde *</label><input type="month" id="m-desde" value="' + (m.desde || hoyMes()) + '"></div>';
-    html += '<div class="fl"><label class="flabel">Paga hasta *</label><input type="month" id="m-hasta" value="' + (m.hasta || hoyMes()) + '"></div>';
-    html += '<div class="fl fgf"><label class="flabel">Estado de pago</label><select id="m-pag"><option value="0"' + (!m.pagado ? ' selected' : '') + '>Pendiente</option><option value="1"' + (m.pagado ? ' selected' : '') + '>Pagado</option></select></div>';
+    html += '<div class="fl"><label class="flabel">Fecha de matrícula *</label><input type="date" id="m-fecha" value="' + (m.fecha || hoy()) + '"><span style="font-size:11px;color:var(--t3);margin-top:2px">Día / Mes / Año</span></div>';
+    html += '<div class="fl"><label class="flabel">Monto mensual (S/) *</label><input type="number" id="m-monto" value="' + (m.monto || '') + '" min="1" max="99999" step="0.01" inputmode="decimal" placeholder="Ej: 120.00"></div>';
+    html += '<div class="fl"><label class="flabel">Paga desde *</label><input type="date" id="m-desde" value="' + (m.desde || hoy()) + '"><span style="font-size:11px;color:var(--t3);margin-top:2px">Día / Mes / Año de inicio</span></div>';
+    html += '<div class="fl"><label class="flabel">Paga hasta *</label><input type="date" id="m-hasta" value="' + (m.hasta || hoy()) + '"><span style="font-size:11px;color:var(--t3);margin-top:2px">Día / Mes / Año de fin</span></div>';
+    html += '<div class="fl fgf"><label class="flabel">Estado de pago</label><select id="m-pag"><option value="0"' + (!m.pagado ? ' selected' : '') + '>⏳ Pendiente</option><option value="1"' + (m.pagado ? ' selected' : '') + '>✓ Pagado</option></select></div>';
     html += '</div>';
     html += '<div style="display:flex;gap:8px;margin-top:18px"><button class="btn bp" id="m-save">✓ Guardar</button><button class="btn bo" id="m-cancel">Cancelar</button></div>';
   }
@@ -675,10 +822,10 @@ function renderModal() {
     html = '<div class="modal-title">' + (isNew ? 'Agregar administrador' : 'Editar administrador') + '<button class="modal-close" id="m-close">✕</button></div>';
     html += '<div class="alert al-in" style="margin-bottom:14px">ℹ Solo el Super Admin puede gestionar administradores.</div>';
     html += '<div class="fg" style="gap:14px">';
-    html += '<div class="fl fgf"><label class="flabel">Nombres completos *</label><input type="text" id="m-nom" value="' + (a.nombres || '') + '"></div>';
+    html += '<div class="fl fgf"><label class="flabel">Nombres completos *</label><input type="text" id="m-nom" value="' + (a.nombres || '') + '" placeholder="Apellidos y nombres" autocomplete="name" maxlength="100"></div>';
     html += '<div class="fl"><label class="flabel">Usuario *</label><input type="text" id="m-usr" value="' + (a.usuario || '') + '"' + (datos && datos.esSuperAdmin ? ' readonly' : '') + ' ></div>';
     html += '<div class="fl"><label class="flabel">Contraseña' + (datos && datos.id ? ' (dejar vacío = no cambia)' : '') + ' </label><input type="password" id="m-pass" value=""></div>';
-    html += '<div class="fl"><label class="flabel">Correo</label><input type="email" id="m-email" value="' + (a.email || '') + '"></div>';
+    html += '<div class="fl"><label class="flabel">Correo</label><input type="email" id="m-email" value="' + (a.email || '') + '" placeholder="ejemplo@correo.com" inputmode="email"></div>';
     html += '</div>';
     html += '<div style="display:flex;gap:8px;margin-top:18px"><button class="btn bp" id="m-save">✓ Guardar</button><button class="btn bo" id="m-cancel">Cancelar</button></div>';
   }
@@ -687,9 +834,9 @@ function renderModal() {
     const isNew = !datos || !datos.id;
     html = '<div class="modal-title">' + (isNew ? 'Nuevo simulacro' : 'Editar simulacro') + '<button class="modal-close" id="m-close">✕</button></div>';
     html += '<div class="fg" style="gap:14px">';
-    html += '<div class="fl fgf"><label class="flabel">Título del simulacro *</label><input type="text" id="s-titulo" value="' + (s.titulo || '') + '" placeholder="Ej: Simulacro N°3 – Junio 2025"></div>';
+    html += '<div class="fl fgf"><label class="flabel">Título del simulacro *</label><input type="text" id="s-titulo" value="' + (s.titulo || '') + '" placeholder="Ej: Simulacro N°3 – Junio 2025" maxlength="100"></div>';
     html += '<div class="fl"><label class="flabel">Fecha de aplicación *</label><input type="date" id="s-fecha" value="' + (s.fecha || '') + '"></div>';
-    html += '<div class="fl"><label class="flabel">Total de preguntas *</label><input type="number" id="s-total" value="' + (s.total || 200) + '" min="1" max="999"></div>';
+    html += '<div class="fl"><label class="flabel">Total de preguntas *</label><input type="number" id="s-total" value="' + (s.total || 200) + '" min="1" max="999" step="1" inputmode="numeric"></div>';
     html += '</div>';
     if (datos && datos.id) html += '<div class="alert al-in" style="margin-top:14px">ℹ Editar el título, fecha o total no borra los resultados ya registrados.</div>';
     html += '<div style="display:flex;gap:8px;margin-top:18px"><button class="btn bp" id="m-save">✓ Guardar</button><button class="btn bo" id="m-cancel">Cancelar</button></div>';
@@ -816,12 +963,19 @@ function bindModal() {
   }
   else if (tipo === 'edit-mat') {
     q('#m-save').onclick = async () => {
-      const num = qv('#m-num'), estId = +qv('#m-est'), monto = +qv('#m-monto'), desde = qv('#m-desde'), hasta = qv('#m-hasta'), fecha = qv('#m-fecha'), pagado = qv('#m-pag') === '1';
-      if (!estId || !monto || !desde || !hasta) { toast('Completa los campos obligatorios.', 'wa'); return; }
+      const num = qv('#m-num'), estId = +qv('#m-est'), fecha = qv('#m-fecha');
+      const monto = +qv('#m-monto'), desde = qv('#m-desde'), hasta = qv('#m-hasta');
+      const pagado = qv('#m-pag') === '1';
+      if (!estId) { toast('Selecciona un estudiante.', 'wa'); return; }
+      if (!fecha) { toast('Ingresa la fecha de matrícula.', 'wa'); return; }
+      if (!monto || monto <= 0) { toast('Ingresa el monto mensual.', 'wa'); return; }
+      if (!desde || !hasta) { toast('Ingresa las fechas de inicio y fin del periodo.', 'wa'); return; }
+      if (desde > hasta) { toast('La fecha "Paga desde" no puede ser posterior a "Paga hasta".', 'wa'); return; }
       if (datos && datos.id) {
         const m = DB.mats.find(x => x.id === datos.id);
-        if (m) { m.estId = estId; m.monto = monto; m.desde = desde; m.hasta = hasta; m.fecha = fecha; m.pagado = pagado; syncMatUpdate(m); }
+        if (m) { m.estId = estId; m.fecha = fecha; m.monto = monto; m.desde = desde; m.hasta = hasta; m.pagado = pagado; syncMatUpdate2(m); }
       } else {
+        if (getMat(estId)) { toast('Este estudiante ya tiene matrícula. Solo puede tener una.', 'wa'); return; }
         const nm = { id: nid(), num, estId, fecha, monto, desde, hasta, pagado };
         DB.mats.push(nm); syncMatNueva(nm);
       }
@@ -872,29 +1026,43 @@ function confirmDelete(msg, onConfirm) { openModal('confirm', { titulo: 'Elimina
 
 // ══ DASHBOARD ══
 function renderDash() {
-  const pag = DB.mats.filter(m => m.pagado).length;
-  const deu = DB.mats.filter(m => !m.pagado).length;
-  const ing = DB.mats.filter(m => m.pagado).reduce((s, m) => s + m.monto, 0);
+  // Stats usando cuotas (pagos reales)
+  const pag = DB.cuotas.filter(q => q.pagado).length;
+  const deu = DB.cuotas.filter(q => !q.pagado).length;
+  const ing = DB.cuotas.filter(q => q.pagado).reduce((s, q) => s + q.monto, 0);
+  const matConDeuda = DB.mats.filter(m => { const cq = getCuotas(m.id); return cq.length === 0 || cq.some(q => !q.pagado); }).length;
   const sim = DB.sims[DB.sims.length - 1];
   const top3 = sim ? [...sim.res].sort((a, b) => b.pts - a.pts).slice(0, 3) : [];
-  const deudaRows = DB.mats.filter(m => !m.pagado).map(m => { const e = getEst(m.estId); return '<tr class="dr"><td style="font-weight:600">' + e.nombres + '</td><td style="font-size:11.5px">' + e.grado + '</td><td><span class="badge b-no">S/ ' + m.monto + '</span></td><td style="font-size:11.5px">' + fmtMes(m.desde) + ' → ' + fmtMes(m.hasta) + '</td></tr>'; }).join('');
-  const matRows = [...DB.mats].reverse().slice(0, 6).map(m => { const e = getEst(m.estId); return '<tr><td style="font-size:11.5px;color:var(--t3)">' + m.num + '</td><td style="font-weight:600">' + e.nombres + '</td><td style="font-size:12px">' + e.grado + '</td><td style="font-size:12px">' + fmtMes(m.desde) + ' → ' + fmtMes(m.hasta) + '</td><td>S/ ' + m.monto + '</td><td><span class="badge ' + (m.pagado ? 'b-ok' : 'b-no') + '">' + (m.pagado ? 'Pagado' : 'Pendiente') + '</span></td></tr>'; }).join('');
+  // Mostrar estudiantes con cuotas pendientes en el dashboard
+  const deudaRows = (() => {
+    const pendientes = [];
+    DB.mats.forEach(m => {
+      const cqs = getCuotas(m.id).filter(q => !q.pagado);
+      if (cqs.length > 0 || getCuotas(m.id).length === 0) {
+        const e = getEst(m.estId);
+        const td = cqs.reduce((s, q) => s + q.monto, 0);
+        pendientes.push('<tr class="dr"><td style="font-weight:600">' + e.nombres + '</td><td style="font-size:11.5px">' + e.grado + '</td><td><span class="badge b-no">' + cqs.length + ' pendiente' + (cqs.length !== 1 ? 's' : '') + '</span></td><td style="font-size:11.5px">' + (td > 0 ? 'S/ ' + td : 'Sin pagos') + '</td></tr>');
+      }
+    });
+    return pendientes.slice(0, 8).join('');
+  })();
+  const matRows = [...DB.mats].reverse().slice(0, 6).map(m => { const e = getEst(m.estId); return '<tr><td style="font-size:11px;color:var(--t3)">' + m.num + '</td><td style="font-weight:600">' + e.nombres + '</td><td style="font-size:12px">' + e.grado + '</td><td style="font-size:12px">' + fmtDate(m.fecha) + '</td><td style="font-size:12px">' + fmtDate(m.desde) + ' → ' + fmtDate(m.hasta) + '</td><td>S/ ' + m.monto + '</td><td><span class="badge ' + (m.pagado ? 'b-ok' : 'b-no') + '">' + (m.pagado ? 'Pagado' : 'Pendiente') + '</span></td></tr>'; }).join('');
   const podio = ['🥇', '🥈', '🥉'];
 
   let html = '<div class="sg">';
   html += '<div class="sc"><div class="si" style="background:var(--Pl)">👥</div><div class="sl">Estudiantes</div><div class="sv">' + DB.ests.length + '</div><div class="ss">' + DB.apods.length + ' apoderados</div></div>';
-  html += '<div class="sc"><div class="si" style="background:var(--Gb)">📋</div><div class="sl">Matrículas</div><div class="sv">' + DB.mats.length + '</div><div class="ss">' + pag + ' al día</div></div>';
-  html += '<div class="sc"><div class="si" style="background:var(--okb)">💰</div><div class="sl">Ingresos cobrados</div><div class="sv" style="font-size:22px">S/' + ing + '</div><div class="ss">confirmados</div></div>';
-  html += '<div class="sc"><div class="si" style="background:var(--nob)">⚠️</div><div class="sl">Con deuda</div><div class="sv" style="color:var(--no)">' + deu + '</div><div class="ss">pago pendiente</div></div>';
+  html += '<div class="sc"><div class="si" style="background:var(--Gb)">📋</div><div class="sl">Matrículas</div><div class="sv">' + DB.mats.length + '</div><div class="ss">' + DB.cuotas.length + ' pagos reg.</div></div>';
+  html += '<div class="sc"><div class="si" style="background:var(--okb)">💰</div><div class="sl">Ingresos cobrados</div><div class="sv" style="font-size:22px">S/' + ing + '</div><div class="ss">' + pag + ' pago' + (pag !== 1 ? 's' : '') + ' confirmado' + (pag !== 1 ? 's' : '') + '</div></div>';
+  html += '<div class="sc"><div class="si" style="background:var(--nob)">⚠️</div><div class="sl">Con deuda</div><div class="sv" style="color:var(--no)">' + matConDeuda + '</div><div class="ss">matrículas</div></div>';
   html += '</div>';
-  html += '<div style="display:grid;grid-template-columns:1.2fr 1fr;gap:16px">';
+  html += '<div class="dash-grid">';
   html += '<div class="card"><div class="ch"><div><div class="ct">Alumnos con deuda</div></div><button class="btn bo bsm" id="ir-pagos">Ver todos</button></div>';
-  html += (deu === 0 ? '<div class="empty">✅ Sin deudas</div>' : '<table><thead><tr><th>Estudiante</th><th>Grado</th><th>Monto</th><th>Periodo</th></tr></thead><tbody>' + deudaRows + '</tbody></table>');
+  html += (deu === 0 ? '<div class="empty">✅ Sin deudas</div>' : '<div class="table-wrap"><table><thead><tr><th>Estudiante</th><th>Grado</th><th>Monto</th><th>Periodo</th></tr></thead><tbody>' + deudaRows + '</tbody></table></div>');
   html += '</div>';
   html += '<div class="card"><div class="ch"><div><div class="ct">Podio · ' + (sim ? sim.titulo : '—') + '</div></div><button class="btn bo bsm" id="ir-sims">Ver ranking</button></div>';
   top3.forEach((r, i) => { const e = getEst(r.estId); html += '<div style="display:flex;align-items:center;gap:12px;padding:9px 0;' + (i < 2 ? 'border-bottom:1px solid var(--brd)' : '') + '">' + '<div style="font-size:22px">' + podio[i] + '</div>' + '<div style="flex:1"><div style="font-weight:600;font-size:13px">' + e.nombres + '</div><div style="font-size:11px;color:var(--t3)">' + e.grado + '</div></div>' + '<div style="font-weight:800;font-size:17px;color:' + (i === 0 ? '#92400e' : 'var(--t1)') + '">' + r.pts + '</div></div>'; });
   html += '</div></div>';
-  html += '<div class="card"><div class="ch"><div class="ct">Matrículas recientes</div></div><table><thead><tr><th>N°</th><th>Estudiante</th><th>Grado</th><th>Periodo</th><th>Monto</th><th>Estado</th></tr></thead><tbody>' + matRows + '</tbody></table></div>';
+  html += '<div class="card"><div class="ch"><div class="ct">Matrículas recientes</div></div><table><thead><tr><th>N°</th><th>Estudiante</th><th>Grado</th><th>Fecha</th><th>Periodo</th><th>Monto</th><th>Estado</th></tr></thead><tbody>' + matRows + '</tbody></table></div>';
   return html;
 }
 
@@ -909,17 +1077,17 @@ function renderAdmin() {
   if (tab === 'apods') {
     const rows = DB.apods.map(a => '<tr><td style="font-weight:600">' + a.nombres + '</td><td>' + a.cel + '</td><td style="color:var(--t3)">' + (a.correo || '—') + '</td><td style="font-size:12px">' + a.dir + '</td><td><div style="display:flex;gap:6px"><button class="btn bo bsm crud-edit" data-tipo="apod" data-id="' + a.id + '">✏ Editar</button><button class="btn bed bsm crud-del" data-tipo="apod" data-id="' + a.id + '">🗑</button></div></td></tr>').join('');
     content = '<div class="ch" style="margin-bottom:14px"><div class="ct">Apoderados (' + DB.apods.length + ')</div><button class="btn bp bsm crud-new" data-tipo="apod">➕ Nuevo apoderado</button></div>';
-    content += '<table><thead><tr><th>Nombres</th><th>Celular</th><th>Correo</th><th>Dirección</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    content += '<div class="table-wrap"><table><thead><tr><th>Nombres</th><th>Celular</th><th>Correo</th><th>Dirección</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
   }
   else if (tab === 'ests') {
     const rows = DB.ests.map(e => { const a = getApod(e.apodId); return '<tr><td><div style="font-weight:600">' + e.nombres + '</div><div style="font-size:11px;color:var(--t3)">' + e.codigo + '</div></td><td style="font-size:12px">' + e.grado + '</td><td>' + e.edad + ' años</td><td style="font-size:12px">' + a.nombres + '</td><td>' + (e.credCreadas ? '<span class="badge b-ok" style="font-size:11px">🔐 @' + e.usuario + '</span>' : '<span class="badge b-wa" style="font-size:11px">⚠ Solo código</span>') + '</td><td><div style="display:flex;gap:6px"><button class="btn bo bsm crud-edit" data-tipo="est" data-id="' + e.id + '">✏ Editar</button><button class="btn bed bsm crud-del" data-tipo="est" data-id="' + e.id + '">🗑</button></div></td></tr>'; }).join('');
     content = '<div class="ch" style="margin-bottom:14px"><div class="ct">Estudiantes (' + DB.ests.length + ')</div><button class="btn bp bsm crud-new" data-tipo="est">➕ Nuevo estudiante</button></div>';
-    content += '<table><thead><tr><th>Estudiante / Código</th><th>Grado</th><th>Edad</th><th>Apoderado</th><th>Acceso</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    content += '<div class="table-wrap"><table><thead><tr><th>Estudiante / Código</th><th>Grado</th><th>Edad</th><th>Apoderado</th><th>Acceso</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
   }
   else if (tab === 'mats') {
-    const rows = DB.mats.map(m => { const e = getEst(m.estId); return '<tr class="' + (m.pagado ? '' : 'dr') + '"><td style="font-size:11.5px;color:var(--t3)">' + m.num + '</td><td style="font-weight:600;font-size:12.5px">' + e.nombres + '</td><td style="font-size:12px">' + fmtMes(m.desde) + ' → ' + fmtMes(m.hasta) + '</td><td>S/ ' + m.monto + '</td><td><span class="badge ' + (m.pagado ? 'b-ok' : 'b-no') + '">' + (m.pagado ? 'Pagado' : 'Pendiente') + '</span></td><td><div style="display:flex;gap:6px"><button class="btn bo bsm crud-edit" data-tipo="mat" data-id="' + m.id + '">✏ Editar</button><button class="btn bed bsm crud-del" data-tipo="mat" data-id="' + m.id + '">🗑</button></div></td></tr>'; }).join('');
+    const rows = DB.mats.map(m => { const e = getEst(m.estId); return '<tr class="' + (m.pagado ? '' : 'dr') + '"><td style="font-size:11.5px;color:var(--t3)">' + m.num + '</td><td style="font-weight:600;font-size:12.5px">' + e.nombres + '</td><td style="font-size:12px">' + e.grado + '</td><td style="font-size:12px">' + fmtDate(m.fecha) + '</td><td style="font-size:12px">' + fmtDate(m.desde) + ' → ' + fmtDate(m.hasta) + '</td><td>S/ ' + m.monto + '</td><td><span class="badge ' + (m.pagado ? 'b-ok' : 'b-no') + '">' + (m.pagado ? 'Pagado' : 'Pendiente') + '</span></td><td><div style="display:flex;gap:6px"><button class="btn bo bsm crud-edit" data-tipo="mat" data-id="' + m.id + '">✏ Editar</button><button class="btn bed bsm crud-del" data-tipo="mat" data-id="' + m.id + '">🗑</button></div></td></tr>'; }).join('');
     content = '<div class="ch" style="margin-bottom:14px"><div class="ct">Matrículas (' + DB.mats.length + ')</div><button class="btn bp bsm crud-new" data-tipo="mat">➕ Nueva matrícula</button></div>';
-    content += '<table><thead><tr><th>N°</th><th>Estudiante</th><th>Periodo</th><th>Monto</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    content += '<div class="table-wrap"><table><thead><tr><th>N°</th><th>Estudiante</th><th>Grado</th><th>Fecha Mat.</th><th>Desde → Hasta</th><th>Monto</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
   }
   else if (tab === 'sims') {
     content = renderAdminSims();
@@ -931,7 +1099,7 @@ function renderAdmin() {
       const rows = DB.admins.map(a => '<tr><td><div style="font-weight:600">' + a.nombres + '</div>' + (a.esSuperAdmin ? '<span class="badge b-crown" style="font-size:10px;margin-top:3px">👑 Super Admin</span>' : '') + '</td><td><span class="badge b-p">' + a.usuario + '</span></td><td style="color:var(--t3)">' + (a.email || '—') + '</td><td><div style="display:flex;gap:6px"><button class="btn bo bsm crud-edit" data-tipo="admin" data-id="' + a.id + '">✏ Editar</button>' + (a.esSuperAdmin ? '<span style="font-size:11px;color:var(--t3)">— protegido</span>' : '<button class="btn bed bsm crud-del" data-tipo="admin" data-id="' + a.id + '">🗑</button>') + '</div></td></tr>').join('');
       content = '<div class="alert al-in" style="margin-bottom:14px">👑 Solo el Super Admin puede agregar, editar o eliminar administradores.</div>';
       content += '<div class="ch" style="margin-bottom:14px"><div class="ct">Administradores (' + DB.admins.length + ')</div><button class="btn bp bsm crud-new" data-tipo="admin">➕ Agregar admin</button></div>';
-      content += '<table><thead><tr><th>Nombres</th><th>Usuario</th><th>Correo</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      content += '<div class="table-wrap"><table><thead><tr><th>Nombres</th><th>Usuario</th><th>Correo</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
     }
   }
   return '<div class="tabs" style="flex-wrap:wrap">' + tabs + '</div><div class="card">' + content + '</div>';
@@ -970,7 +1138,7 @@ function renderAdminSims() {
     panelPuntajes += '</div>';
   }
 
-  return '<div style="display:grid;grid-template-columns:1fr 1.8fr;gap:18px">' +
+  return '<div style="class="sims-grid" style="gap:18px"">' +
     '<div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><span style="font-weight:700;font-size:13.5px">Simulacros (' + DB.sims.length + ')</span><button class="btn bp bsm" id="sim-nuevo-btn">➕ Nuevo</button></div>' +
     (DB.sims.length === 0 ? '<div class="empty" style="padding:24px 0">Sin simulacros aún</div>' : simList) +
     '</div>' +
@@ -1066,31 +1234,52 @@ function renderMatricular() {
       formHTML += '<div class="fl"><label class="flabel">Seleccionar apoderado *</label><select id="apodSel"><option value="">— Selecciona —</option>' + apodOpts + '</select></div>';
     } else {
       formHTML += '<div class="fg">';
-      formHTML += '<div class="fl fgf"><label class="flabel">Nombres *</label><input type="text" id="a-nom" value="' + DB.matAF.nombres + '"></div>';
-      formHTML += '<div class="fl fgf"><label class="flabel">Dirección *</label><input type="text" id="a-dir" value="' + DB.matAF.dir + '"></div>';
-      formHTML += '<div class="fl"><label class="flabel">Celular *</label><input type="text" id="a-cel" value="' + DB.matAF.cel + '"></div>';
-      formHTML += '<div class="fl"><label class="flabel">Correo</label><input type="email" id="a-cor" value="' + DB.matAF.correo + '"></div>';
+      formHTML += '<div class="fl fgf"><label class="flabel">Nombres completos *</label><input type="text" id="a-nom" value="' + DB.matAF.nombres + '" placeholder="Apellidos y nombres" autocomplete="name" maxlength="100"></div>';
+      formHTML += '<div class="fl fgf"><label class="flabel">Dirección *</label><input type="text" id="a-dir" value="' + DB.matAF.dir + '" placeholder="Ej: Av. Los Álamos 123" maxlength="150"></div>';
+      formHTML += '<div class="fl"><label class="flabel">Celular *</label><input type="tel" id="a-cel" value="' + DB.matAF.cel + '" placeholder="Ej: 987654321" maxlength="15" inputmode="tel"></div>';
+      formHTML += '<div class="fl"><label class="flabel">Correo</label><input type="email" id="a-cor" value="' + DB.matAF.correo + '" placeholder="ejemplo@correo.com" inputmode="email"></div>';
       formHTML += '</div>';
     }
   } else if (s === 2) {
     const gradOpts = grados.map(g => '<option value="' + g + '"' + (DB.matEF.grado === g ? ' selected' : '') + '>' + g + '</option>').join('');
     formHTML = '<div class="ch"><div><div class="ct">Datos del estudiante</div></div></div>';
     formHTML += '<div class="fg">';
-    formHTML += '<div class="fl fgf"><label class="flabel">Nombres *</label><input type="text" id="e-nom" value="' + DB.matEF.nombres + '"></div>';
-    formHTML += '<div class="fl"><label class="flabel">Edad *</label><input type="number" id="e-edad" value="' + DB.matEF.edad + '" min="5" max="25"></div>';
+    formHTML += '<div class="fl fgf"><label class="flabel">Nombres completos *</label><input type="text" id="e-nom" value="' + DB.matEF.nombres + '" placeholder="Apellidos y nombres" autocomplete="name" maxlength="100"></div>';
+    formHTML += '<div class="fl"><label class="flabel">Edad *</label><input type="number" id="e-edad" value="' + DB.matEF.edad + '" min="5" max="25" step="1" inputmode="numeric" placeholder="Ej: 15"></div>';
     formHTML += '<div class="fl"><label class="flabel">Grado *</label><select id="e-grado"><option value="">—</option>' + gradOpts + '</select></div>';
-    formHTML += '<div class="fl"><label class="flabel">Celular</label><input type="text" id="e-cel" value="' + DB.matEF.cel + '"></div>';
-    formHTML += '<div class="fl"><label class="flabel">Correo</label><input type="email" id="e-cor" value="' + DB.matEF.correo + '"></div>';
+    formHTML += '<div class="fl"><label class="flabel">Celular</label><input type="tel" id="e-cel" value="' + DB.matEF.cel + '" placeholder="Ej: 987654321" maxlength="15" inputmode="tel"></div>';
+    formHTML += '<div class="fl"><label class="flabel">Correo</label><input type="email" id="e-cor" value="' + DB.matEF.correo + '" placeholder="ejemplo@correo.com" inputmode="email"></div>';
     formHTML += '</div>';
   } else {
     const autoNum = 'MAT-' + anioActual() + '-' + String(DB.mats.length + 1).padStart(3, '0');
+    // Resumen de pasos anteriores
+    const apodNom = DB.matApodMode === 'existente'
+      ? (DB.apods.find(a => a.id == DB.matApodSel) || { nombres: '—' }).nombres
+      : DB.matAF.nombres || '—';
     formHTML = '<div class="ch"><div><div class="ct">Datos de la matrícula</div></div></div>';
+    // Mini resumen
+    formHTML += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">';
+    formHTML += '<div style="flex:1;background:var(--Pl);border-radius:8px;padding:9px 12px;min-width:140px">';
+    formHTML += '<div style="font-size:10.5px;color:var(--P);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Apoderado</div>';
+    formHTML += '<div style="font-size:13px;font-weight:600;color:var(--t1)">' + apodNom + '</div>';
+    formHTML += '</div>';
+    formHTML += '<div style="flex:1;background:var(--okb);border-radius:8px;padding:9px 12px;min-width:140px">';
+    formHTML += '<div style="font-size:10.5px;color:var(--ok);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Estudiante</div>';
+    formHTML += '<div style="font-size:13px;font-weight:600;color:var(--t1)">' + (DB.matEF.nombres || '—') + '</div>';
+    formHTML += '<div style="font-size:11.5px;color:var(--t3)">' + (DB.matEF.grado || '') + (DB.matEF.edad ? ' · ' + DB.matEF.edad + ' años' : '') + '</div>';
+    formHTML += '</div>';
+    formHTML += '</div>';
     formHTML += '<div class="fg">';
     formHTML += '<div class="fl"><label class="flabel">N° Matrícula</label><input type="text" value="' + (DB.matMF.num || autoNum) + '" readonly></div>';
-    formHTML += '<div class="fl"><label class="flabel">Fecha de registro</label><input type="date" id="m-fecha" value="' + (DB.matMF.fecha || hoy()) + '"></div>';
-    formHTML += '<div class="fl"><label class="flabel">Paga desde *</label><input type="month" id="m-desde" value="' + (DB.matMF.desde || hoyMes()) + '"></div>';
-    formHTML += '<div class="fl"><label class="flabel">Paga hasta *</label><input type="month" id="m-hasta" value="' + (DB.matMF.hasta || hoyMes()) + '"></div>';
-    formHTML += '<div class="fl"><label class="flabel">Monto (S/) *</label><input type="number" id="m-monto" value="' + DB.matMF.monto + '" placeholder="0.00"></div>';
+    formHTML += '<div class="fl"><label class="flabel">Fecha de matrícula *</label><input type="date" id="m-fecha" value="' + (DB.matMF.fecha || hoy()) + '">';
+    formHTML += '<span style="font-size:11px;color:var(--t3);margin-top:2px">Día / Mes / Año del registro</span></div>';
+    formHTML += '<div class="fl"><label class="flabel">Monto mensual (S/) *</label><input type="number" id="m-monto" value="' + (DB.matMF.monto || '') + '" placeholder="Ej: 120.00" min="1" max="99999" step="0.01" inputmode="decimal">';
+    formHTML += '<span style="font-size:11px;color:var(--t3);margin-top:2px">Monto mensual de la matrícula</span></div>';
+    formHTML += '<div class="fl"><label class="flabel">Paga desde *</label><input type="date" id="m-desde" value="' + (DB.matMF.desde || hoy()) + '">';
+    formHTML += '<span style="font-size:11px;color:var(--t3);margin-top:2px">Día / Mes / Año de inicio del periodo</span></div>';
+    formHTML += '<div class="fl"><label class="flabel">Paga hasta *</label><input type="date" id="m-hasta" value="' + (DB.matMF.hasta || hoy()) + '">';
+    formHTML += '<span style="font-size:11px;color:var(--t3);margin-top:2px">Día / Mes / Año de fin del periodo</span></div>';
+    formHTML += '<div class="fl fgf"><label class="flabel">Estado de pago</label><select id="m-pagado"><option value="0" selected>⏳ Pendiente</option><option value="1">✓ Pagado</option></select></div>';
     formHTML += '</div>';
   }
 
@@ -1104,18 +1293,173 @@ function renderMatricular() {
   return html;
 }
 
-// ══ PAGOS ══
+// ══ PAGOS — Sistema de cuotas por estudiante ══
 function renderPagos() {
-  const f = DB.pagoFiltro;
-  const all = DB.mats;
-  const lista = f === 'todos' ? all : f === 'deuda' ? all.filter(m => !m.pagado) : all.filter(m => m.pagado);
-  const rows = lista.map(m => { const e = getEst(m.estId); return '<tr class="' + (m.pagado ? '' : 'dr') + '"><td style="font-size:11.5px;color:var(--t3)">' + m.num + '</td><td style="font-weight:600">' + e.nombres + '</td><td style="font-size:12px">' + e.grado + '</td><td style="font-size:12px">' + fmtMes(m.desde) + ' → ' + fmtMes(m.hasta) + '</td><td style="font-weight:600">S/ ' + m.monto + '</td><td><span class="badge ' + (m.pagado ? 'b-ok' : 'b-no') + '">' + (m.pagado ? 'Pagado' : 'Pendiente') + '</span></td><td>' + (!m.pagado ? '<button class="btn bok bsm pago-btn" data-id="' + m.id + '">✓ Marcar pagado</button>' : '<span style="font-size:12px;color:var(--t3)">✓</span>') + '</td></tr>'; }).join('');
+  const f = DB.pagoFiltro; // 'todos'|'deuda'|'pagado'
+
+  if (DB.mats.length === 0) {
+    return '<div class="card"><div class="empty" style="padding:48px 0">💳<br><br>No hay matrículas registradas.<br>' +
+      '<span style="font-size:12px;color:var(--t3)">Ve a <strong>Nueva matrícula</strong> para registrar estudiantes.</span></div></div>';
+  }
+
+  // Para el filtro usamos el estado de cuotas (si todas están pagadas → al día; si alguna pendiente → deuda)
+  function estadoMat(mat) {
+    const cuotas = getCuotas(mat.id);
+    if (cuotas.length === 0) return 'sin_cuotas'; // matrícula sin cuotas registradas
+    if (cuotas.some(q => !q.pagado)) return 'deuda';
+    return 'pagado';
+  }
+
+  let mlist = DB.mats;
+  if (f === 'deuda') mlist = DB.mats.filter(m => { const e = estadoMat(m); return e === 'deuda' || e === 'sin_cuotas'; });
+  if (f === 'pagado') mlist = DB.mats.filter(m => estadoMat(m) === 'pagado');
+
+  const cntDeuda = DB.mats.filter(m => { const e = estadoMat(m); return e === 'deuda' || e === 'sin_cuotas'; }).length;
+  const cntPagado = DB.mats.filter(m => estadoMat(m) === 'pagado').length;
+
   let html = '<div class="tabs">';
-  html += '<button class="tab' + (f === 'todos' ? ' act' : '') + '" id="pf-todos">Todos (' + all.length + ')</button>';
-  html += '<button class="tab' + (f === 'deuda' ? ' act' : '') + '" id="pf-deuda">Con deuda (' + all.filter(m => !m.pagado).length + ')</button>';
-  html += '<button class="tab' + (f === 'pagado' ? ' act' : '') + '" id="pf-pagado">Pagados (' + all.filter(m => m.pagado).length + ')</button>';
+  html += '<button class="tab' + (f === 'todos' ? ' act' : '') + '" id="pf-todos">Todos (' + DB.mats.length + ')</button>';
+  html += '<button class="tab' + (f === 'deuda' ? ' act' : '') + '" id="pf-deuda">Con deuda (' + cntDeuda + ')</button>';
+  html += '<button class="tab' + (f === 'pagado' ? ' act' : '') + '" id="pf-pagado">Al día (' + cntPagado + ')</button>';
   html += '</div>';
-  html += '<div class="card">' + (lista.length === 0 ? '<div class="empty">Sin registros</div>' : '<table><thead><tr><th>N°</th><th>Estudiante</th><th>Grado</th><th>Periodo</th><th>Monto</th><th>Estado</th><th>Acción</th></tr></thead><tbody>' + rows + '</tbody></table>') + '</div>';
+
+  if (mlist.length === 0) {
+    html += '<div class="card"><div class="empty">Sin registros en este filtro</div></div>';
+    return html;
+  }
+
+  mlist.forEach(mat => {
+    const est = getEst(mat.estId);
+    const cuotas = getCuotas(mat.id).sort((a, b) => a.fecha.localeCompare(b.fecha));
+    const ncTotal = cuotas.length;
+    const ncPag = cuotas.filter(q => q.pagado).length;
+    const ncDeu = cuotas.filter(q => !q.pagado).length;
+    const totalPag = cuotas.filter(q => q.pagado).reduce((s, q) => s + q.monto, 0);
+    const totalDeu = cuotas.filter(q => !q.pagado).reduce((s, q) => s + q.monto, 0);
+    const estado = estadoMat(mat);
+    const colorBorde = estado === 'pagado' ? 'var(--ok)' : estado === 'deuda' ? 'var(--no)' : 'var(--brd)';
+    const colorBg = estado === 'pagado' ? '#f0fdf4' : estado === 'deuda' ? '#fff7ed' : '#f8f9fe';
+
+    html += '<div class="card" style="margin-bottom:14px;border-left:4px solid ' + colorBorde + ';background:' + colorBg + '">';
+
+    // ── HEADER tarjeta ──
+    html += '<div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--brd)">';
+    html += '<div style="display:flex;align-items:center;gap:12px">';
+    html += '<div style="width:44px;height:44px;border-radius:50%;background:var(--Pl);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:var(--P);flex-shrink:0">' + est.nombres.charAt(0) + '</div>';
+    html += '<div>';
+    html += '<div style="font-weight:700;font-size:14.5px">' + est.nombres + '</div>';
+    html += '<div style="font-size:12px;color:var(--t3);margin-top:2px">' + est.grado + ' · <span style="font-weight:600">' + mat.num + '</span></div>';
+    html += '<div style="font-size:12px;color:var(--t3)">Matrícula: ' + fmtDate(mat.fecha) + ' · Monto base: <strong>S/ ' + mat.monto + '</strong></div>';
+    html += '<div style="font-size:12px;color:var(--t3)">Periodo: ' + fmtDate(mat.desde) + ' → ' + fmtDate(mat.hasta) + '</div>';
+    html += '</div></div>';
+
+    // Resumen financiero + botones
+    html += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">';
+    // Badges de estado
+    html += '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">';
+    if (ncTotal === 0) {
+      html += '<span class="badge b-wa">Sin cuotas</span>';
+    } else {
+      if (ncPag > 0) html += '<span class="badge b-ok">✓ ' + ncPag + ' pagada' + (ncPag !== 1 ? 's' : '') + '</span>';
+      if (ncDeu > 0) html += '<span class="badge b-no">⚠ ' + ncDeu + ' pendiente' + (ncDeu !== 1 ? 's' : '') + '</span>';
+    }
+    html += '</div>';
+    // Totales
+    if (ncTotal > 0) {
+      html += '<div style="text-align:right">';
+      if (totalPag > 0) html += '<div style="font-size:12px;color:var(--ok);font-weight:700">Cobrado: S/ ' + totalPag + '</div>';
+      if (totalDeu > 0) html += '<div style="font-size:12px;color:var(--no);font-weight:700">Pendiente: S/ ' + totalDeu + '</div>';
+      html += '</div>';
+    }
+    // Botón agregar cuota
+    html += '<button class="btn bp bsm add-cuota-btn" data-matid="' + mat.id + '" data-monto="' + mat.monto + '" style="font-size:12px">➕ Agregar pago</button>';
+    html += '</div></div>';
+
+    // ── TABLA DE CUOTAS ──
+    if (cuotas.length === 0) {
+      html += '<div style="padding:16px;text-align:center;color:var(--t3);font-size:13px;background:rgba(255,255,255,.7);border-radius:8px">';
+      html += '📭 Sin pagos registrados — pulsa <strong>➕ Agregar pago</strong> para registrar el primer pago.';
+      html += '</div>';
+    } else {
+      html += '<div class="table-wrap">';
+      html += '<table style="min-width:380px"><thead><tr>';
+      html += '<th>#</th><th>Fecha de pago</th><th>Monto (S/)</th><th>Estado</th><th>Observación</th><th style="text-align:center">Acciones</th>';
+      html += '</tr></thead><tbody>';
+      cuotas.forEach((q, i) => {
+        html += '<tr class="' + (q.pagado ? '' : 'dr') + '">';
+        html += '<td style="color:var(--t3);font-size:12px">' + (i + 1) + '</td>';
+        html += '<td style="font-weight:600">' + fmtDate(q.fecha) + '</td>';
+        html += '<td style="font-weight:700">S/ ' + q.monto + '</td>';
+        html += '<td><span class="badge ' + (q.pagado ? 'b-ok' : 'b-no') + '">' + (q.pagado ? '✓ Pagado' : '⏳ Pendiente') + '</span></td>';
+        html += '<td style="font-size:12px;color:var(--t3);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (q.obs || '—') + '</td>';
+        html += '<td><div style="display:flex;gap:5px;justify-content:center;flex-wrap:wrap">';
+        if (!q.pagado) html += '<button class="btn bok bsm cuota-pagar" data-qid="' + q.id + '" style="font-size:11px;padding:5px 10px">✓ Pagar</button>';
+        else html += '<button class="btn bsm cuota-deshacer" data-qid="' + q.id + '" style="background:var(--wab);color:var(--wa);border:1px solid #fde047;font-size:11px;padding:5px 10px">↩</button>';
+        html += '<button class="btn bsm cuota-editar" data-qid="' + q.id + '" style="background:var(--Pl);color:var(--P);border:1px solid var(--brd);font-size:11px;padding:5px 8px">✏</button>';
+        html += '<button class="btn bed bsm cuota-del" data-qid="' + q.id + '" style="font-size:11px;padding:5px 8px">🗑</button>';
+        html += '</div></td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+
+    html += '</div>'; // cierra card
+  });
+
+  return html;
+}
+
+// ── Modal agregar/editar cuota ───────────────────────────────
+function renderModalCuota(matId, montoBase, cuotaEdit) {
+  const mat = DB.mats.find(m => m.id === matId);
+  const est = mat ? getEst(mat.estId) : { nombres: '—' };
+  const esEdit = !!cuotaEdit;
+  const q = cuotaEdit || { fecha: hoy(), monto: montoBase || mat && mat.monto || '', pagado: true, obs: '' };
+
+  // Cuotas existentes para mostrar advertencia de fecha duplicada
+  const cuotasExistentes = getCuotas(matId);
+
+  let html = '<div class="modal-title">';
+  html += (esEdit ? '✏ Editar pago' : '➕ Nuevo pago') + ' — <span style="color:var(--P)">' + est.nombres + '</span>';
+  html += '<button class="modal-close" id="m-close">✕</button></div>';
+
+  if (!esEdit && mat) {
+    html += '<div style="background:var(--Pl);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12.5px;color:var(--P)">';
+    html += '📋 <strong>' + mat.num + '</strong> · Monto base: <strong>S/ ' + mat.monto + '</strong> · Periodo: ' + fmtDate(mat.desde) + ' → ' + fmtDate(mat.hasta);
+    html += '</div>';
+    if (cuotasExistentes.length > 0) {
+      html += '<div style="margin-bottom:12px">';
+      html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--t3);margin-bottom:6px">Pagos ya registrados</div>';
+      html += '<div style="display:flex;flex-wrap:wrap;gap:5px">';
+      cuotasExistentes.sort((a, b) => a.fecha.localeCompare(b.fecha)).forEach(cq => {
+        html += '<span style="background:' + (cq.pagado ? 'var(--okb)' : 'var(--nob)') + ';color:' + (cq.pagado ? 'var(--ok)' : 'var(--no)') + ';font-size:11px;padding:3px 8px;border-radius:20px;font-weight:600">';
+        html += fmtDate(cq.fecha) + ' · S/' + cq.monto;
+        html += '</span>';
+      });
+      html += '</div></div>';
+    }
+  }
+
+  html += '<div class="fg" style="gap:14px">';
+  html += '<div class="fl"><label class="flabel">Fecha del pago *</label>';
+  html += '<input type="date" id="cq-fecha" value="' + q.fecha + '">';
+  html += '<span style="font-size:11px;color:var(--t3);margin-top:2px">Día / Mes / Año exacto del pago</span></div>';
+  html += '<div class="fl"><label class="flabel">Monto (S/) *</label>';
+  html += '<input type="number" id="cq-monto" value="' + q.monto + '" min="1" max="99999" step="0.01" inputmode="decimal" placeholder="Ej: 120.00">';
+  html += '<span style="font-size:11px;color:var(--t3);margin-top:2px">Monto de este pago</span></div>';
+  html += '<div class="fl fgf"><label class="flabel">Estado del pago</label>';
+  html += '<select id="cq-pagado">';
+  html += '<option value="1"' + (q.pagado ? ' selected' : '') + '>✓ Pagado — ya se cobró</option>';
+  html += '<option value="0"' + (!q.pagado ? ' selected' : '') + '>⏳ Pendiente — anotado, no cobrado</option>';
+  html += '</select></div>';
+  html += '<div class="fl fgf"><label class="flabel">Observación <span style="font-weight:400;color:var(--t3)">(opcional)</span></label>';
+  html += '<input type="text" id="cq-obs" value="' + (q.obs || '') + '" placeholder="Ej: Pago de Abril, descuento, adelanto..." maxlength="100"></div>';
+  html += '</div>';
+  html += '<div id="cq-err"></div>';
+  html += '<div style="display:flex;gap:8px;margin-top:18px">';
+  html += '<button class="btn bp" id="cq-save" data-matid="' + matId + '" data-qid="' + (cuotaEdit ? cuotaEdit.id : '') + '" data-edit="' + (esEdit ? '1' : '0') + '">';
+  html += (esEdit ? '✓ Guardar cambios' : '✓ Registrar pago');
+  html += '</button><button class="btn bo" id="m-cancel">Cancelar</button></div>';
   return html;
 }
 
@@ -1127,7 +1471,7 @@ function renderBuscar() {
   html += '<button class="tab' + (tipo === 'apod' ? ' act' : '') + '" id="bt-apod">Por apoderado</button>';
   html += '</div>';
   html += '<div class="srch"><span class="srch-ic">🔍</span><input type="text" class="srch-in" id="busq-inp" value="' + q_ + '" placeholder="Escribe el nombre..." autocomplete="off"></div>';
-  html += '<div style="display:grid;grid-template-columns:1fr 1.6fr;gap:16px">';
+  html += '<div class="busq-grid">';
   html += '<div id="busq-panel-res">' + buildResHTML() + '</div>';
   html += '<div id="busq-panel-det">' + buildDetalleHTML() + '</div>';
   html += '</div>';
@@ -1152,7 +1496,7 @@ function buildDetalleHTML() {
     const a = getApod(sel.apodId);
     const ml = DB.mats.filter(m => m.estId === sel.id);
     const deu = ml.some(m => !m.pagado);
-    const mrows = ml.map(m => '<tr class="' + (m.pagado ? '' : 'dr') + '"><td style="font-size:11.5px">' + m.num + '</td><td style="font-size:12px">' + fmtMes(m.desde) + ' → ' + fmtMes(m.hasta) + '</td><td>S/' + m.monto + '</td><td><span class="badge ' + (m.pagado ? 'b-ok' : 'b-no') + '">' + (m.pagado ? 'Pagado' : 'Pendiente') + '</span></td></tr>').join('');
+    const mrows = ml.map(m => '<tr class="' + (m.pagado ? '' : 'dr') + '"><td style="font-size:11.5px">' + m.num + '</td><td style="font-size:12px">' + fmtDate(m.fecha) + '</td><td style="font-size:12px">' + fmtDate(m.desde) + ' → ' + fmtDate(m.hasta) + '</td><td>S/ ' + m.monto + '</td><td><span class="badge ' + (m.pagado ? 'b-ok' : 'b-no') + '">' + (m.pagado ? 'Pagado' : 'Pendiente') + '</span></td></tr>').join('');
     let html = '<div class="card">';
     html += '<div style="display:flex;gap:14px;align-items:flex-start;margin-bottom:14px">';
     html += '<div style="width:48px;height:48px;border-radius:50%;background:var(--Pl);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:var(--P);flex-shrink:0">' + sel.nombres.charAt(0) + '</div>';
@@ -1163,7 +1507,7 @@ function buildDetalleHTML() {
     html += '<div style="font-size:13px;color:var(--t2);line-height:2;margin-bottom:12px"><strong>Apoderado:</strong> ' + a.nombres + '<br><strong>Celular:</strong> ' + a.cel + (a.correo ? '<br><strong>Correo:</strong> ' + a.correo : '') + '<br><strong>Dirección:</strong> ' + a.dir + '</div>';
     html += '<div class="divider"></div>';
     html += '<div class="ct" style="margin-bottom:10px">Matrículas</div>';
-    html += ml.length === 0 ? '<div class="empty" style="padding:12px">Sin matrículas</div>' : '<table><thead><tr><th>N°</th><th>Periodo</th><th>Monto</th><th>Estado</th></tr></thead><tbody>' + mrows + '</tbody></table>';
+    html += ml.length === 0 ? '<div class="empty" style="padding:12px">Sin matrículas</div>' : '<div class="table-wrap"><table><thead><tr><th>N°</th><th>Fecha Mat.</th><th>Desde → Hasta</th><th>Monto</th><th>Estado</th></tr></thead><tbody>' + mrows + '</tbody></table></div>';
     html += '</div>';
     return html;
   } else {
@@ -1228,7 +1572,7 @@ function renderSims() {
   html += '</div>';
   html += '<div class="card">';
   html += '<div class="ch"><div><div class="ct">' + sim.titulo + '</div><div class="cs">' + fmtDate(sim.fecha) + ' · ' + sim.total + ' preguntas</div></div><span class="badge b-pu">Morado = Tercio superior</span></div>';
-  html += ranked.length === 0 ? '<div class="empty">Sin puntajes registrados para este simulacro</div>' : '<table><thead><tr><th>Pos.</th><th>Estudiante</th><th>Puntaje</th><th>Correctas</th><th>%</th></tr></thead><tbody>' + rankRows + '</tbody></table>';
+  html += ranked.length === 0 ? '<div class="empty">Sin puntajes registrados para este simulacro</div>' : '<div class="table-wrap"><table><thead><tr><th>Pos.</th><th>Estudiante</th><th>Puntaje</th><th>Correctas</th><th>%</th></tr></thead><tbody>' + rankRows + '</tbody></table></div>';
   html += '</div>';
   return html;
 }
@@ -1276,21 +1620,25 @@ function renderConfig() {
     '    if (accion === "pushEsts")      return responder(pushHoja("Estudiantes",["id","apodId","nombres","edad","grado","cel","correo","codigo","usuario","password","credCreadas"], data));\n' +
     '    if (accion === "pushMats")      return responder(pushHoja("Matriculas", ["id","num","estId","fecha","monto","desde","hasta","pagado"], data));\n' +
     '    if (accion === "pushSims")      return responder(pushHoja("Simulacros", ["id","titulo","fecha","total","resultados"], data));\n' +
+    '    if (accion === "pushCuotas")    return responder(pushHoja("Cuotas",     ["id","matId","fecha","monto","pagado","obs"], data));\n' +
     '    if (accion === "appendApod")    return responder(appendFila("Apoderados", ["id","nombres","dir","cel","correo"], data));\n' +
     '    if (accion === "appendEst")     return responder(appendFila("Estudiantes",["id","apodId","nombres","edad","grado","cel","correo","codigo","usuario","password","credCreadas"], data));\n' +
     '    if (accion === "appendMat")     return responder(appendFila("Matriculas", ["id","num","estId","fecha","monto","desde","hasta","pagado"], data));\n' +
     '    if (accion === "appendSim")     return responder(appendFila("Simulacros", ["id","titulo","fecha","total","resultados"], data));\n' +
     '    if (accion === "appendAdmin")   return responder(appendFila("Admins",     ["id","nombres","usuario","password","email","esSuperAdmin"], data));\n' +
+    '    if (accion === "appendCuota")   return responder(appendFila("Cuotas",     ["id","matId","fecha","monto","pagado","obs"], data));\n' +
     '    if (accion === "updateApod")    return responder(updateFila("Apoderados", ["id","nombres","dir","cel","correo"], data));\n' +
     '    if (accion === "updateEst")     return responder(updateFila("Estudiantes",["id","apodId","nombres","edad","grado","cel","correo","codigo","usuario","password","credCreadas"], data));\n' +
     '    if (accion === "updateMat")     return responder(updateFila("Matriculas", ["id","num","estId","fecha","monto","desde","hasta","pagado"], data));\n' +
     '    if (accion === "updateSim")     return responder(updateFila("Simulacros", ["id","titulo","fecha","total","resultados"], data));\n' +
     '    if (accion === "updateAdmin")   return responder(updateFila("Admins",     ["id","nombres","usuario","password","email","esSuperAdmin"], data));\n' +
+    '    if (accion === "updateCuota")   return responder(updateFila("Cuotas",     ["id","matId","fecha","monto","pagado","obs"], data));\n' +
     '    if (accion === "deleteApod")    return responder(deleteFila("Apoderados", data.id));\n' +
     '    if (accion === "deleteEst")     return responder(deleteFila("Estudiantes", data.id));\n' +
     '    if (accion === "deleteMat")     return responder(deleteFila("Matriculas", data.id));\n' +
     '    if (accion === "deleteSim")     return responder(deleteFila("Simulacros", data.id));\n' +
     '    if (accion === "deleteAdmin")   return responder(deleteFila("Admins", data.id));\n' +
+    '    if (accion === "deleteCuota")   return responder(deleteFila("Cuotas", data.id));\n' +
     '    return responder({ error: "Accion no reconocida: " + accion });\n' +
     '  } catch(err) {\n' +
     '    return responder({ error: err.message });\n' +
@@ -1346,7 +1694,8 @@ function renderConfig() {
     '    apods:  leerHoja("Apoderados",["id","nombres","dir","cel","correo"]),\n' +
     '    ests:   leerHoja("Estudiantes",["id","apodId","nombres","edad","grado","cel","correo","codigo","usuario","password","credCreadas"]),\n' +
     '    mats:   leerHoja("Matriculas", ["id","num","estId","fecha","monto","desde","hasta","pagado"]),\n' +
-    '    sims:   leerHoja("Simulacros", ["id","titulo","fecha","total","resultados"])\n' +
+    '    sims:   leerHoja("Simulacros", ["id","titulo","fecha","total","resultados"]),\n' +
+    '    cuotas: leerHoja("Cuotas",     ["id","matId","fecha","monto","pagado","obs"])\n' +
     '  };\n' +
     '}\n\n' +
     'function leerHoja(nombre, campos) {\n' +
@@ -1413,6 +1762,7 @@ function renderConfig() {
   ['👥', 'Apoderados', 'id, nombres, dir, cel, correo'],
   ['🎓', 'Estudiantes', 'id, apodId, nombres, edad, grado, cel, correo, codigo, usuario, password, credCreadas'],
   ['💳', 'Matriculas', 'id, num, estId, fecha, monto, desde, hasta, pagado'],
+  ['💰', 'Cuotas', 'id, matId, fecha, monto, pagado(SI/NO), obs'],
   ['🏆', 'Simulacros', 'id, titulo, fecha, total, resultados(JSON)']
   ].forEach(([ic, n, cols]) => {
     html += '<div style="background:#f8f9fe;border:1px solid var(--brd);border-radius:10px;padding:12px 14px;min-width:160px;flex:1">';
@@ -1428,6 +1778,59 @@ function copyScript() {
   const fallback = () => { const t = document.createElement('textarea'); t.value = code; document.body.appendChild(t); t.select(); document.execCommand('copy'); document.body.removeChild(t); toast('Código copiado. ¡Pégalo en Apps Script!'); };
   if (navigator.clipboard) { navigator.clipboard.writeText(code).then(() => toast('Código copiado. ¡Pégalo en Apps Script!')).catch(fallback); }
   else fallback();
+}
+
+
+// ── Abrir y bindear modal de cuota (agregar o editar) ────────
+function abrirModalCuota(matId, montoBase, cuotaEdit) {
+  const mc = document.getElementById('modal-container');
+  if (!mc) return;
+  mc.innerHTML = '<div class="modal-bg" id="m-bg"><div class="modal">' + renderModalCuota(matId, montoBase, cuotaEdit) + '</div></div>';
+
+  const cerrar = () => { mc.innerHTML = ''; };
+  q('#m-close') && q('#m-close').addEventListener('click', cerrar);
+  q('#m-cancel') && q('#m-cancel').addEventListener('click', cerrar);
+  q('#m-bg') && q('#m-bg').addEventListener('click', e => { if (e.target === q('#m-bg')) cerrar(); });
+
+  q('#cq-save') && q('#cq-save').addEventListener('click', async () => {
+    const fecha = qv('#cq-fecha');
+    const monto = +qv('#cq-monto');
+    const pagado = qv('#cq-pagado') === '1';
+    const obs = qv('#cq-obs').trim();
+    const esEdit = q('#cq-save').dataset.edit === '1';
+    const qid = +q('#cq-save').dataset.qid || 0;
+    const mid = +q('#cq-save').dataset.matid;
+    const errEl = document.getElementById('cq-err');
+
+    const showErr = msg => { if (errEl) errEl.innerHTML = msg ? '<div class="alert al-no" style="margin-top:10px">⚠ ' + msg + '</div>' : ''; };
+
+    // Validaciones
+    if (!fecha) { showErr('Selecciona la fecha del pago.'); return; }
+    if (!monto || monto <= 0) { showErr('Ingresa un monto válido mayor a 0.'); return; }
+
+    // Anti-duplicado: verificar que no exista otro pago en la misma fecha (excepto si es edición del mismo)
+    const dupFecha = DB.cuotas.find(cq => cq.matId === mid && cq.fecha === fecha && cq.id !== qid);
+    if (dupFecha) {
+      showErr('Ya existe un pago registrado para el ' + fmtDate(fecha) + '. Usa una fecha diferente o edita el pago existente.');
+      return;
+    }
+
+    if (esEdit) {
+      // Editar cuota existente
+      const cuota = DB.cuotas.find(x => x.id === qid);
+      if (cuota) {
+        cuota.fecha = fecha; cuota.monto = monto; cuota.pagado = pagado; cuota.obs = obs;
+        await syncCuotaUpdate(cuota);
+        cerrar(); toast('✓ Pago actualizado.'); render();
+      }
+    } else {
+      // Nueva cuota
+      const nq = { id: nid(), matId: mid, fecha, monto, pagado, obs };
+      DB.cuotas.push(nq);
+      await syncCuotaNueva(nq);
+      cerrar(); toast('✓ Pago del ' + fmtDate(fecha) + ' registrado — S/ ' + monto); render();
+    }
+  });
 }
 
 // ══ BIND VIEW ══
@@ -1482,7 +1885,8 @@ function bindView() {
     const efMap = { nom: 'nombres', grado: 'grado', cel: 'cel', cor: 'correo' };
     ['nom', 'grado', 'cel', 'cor'].forEach(k => { const el = q('#e-' + k); if (el) el.addEventListener('input', e => DB.matEF[efMap[k]] = e.target.value); });
     const eEdad = q('#e-edad'); if (eEdad) eEdad.addEventListener('input', e => DB.matEF.edad = e.target.value);
-    ['fecha', 'desde', 'hasta', 'monto'].forEach(k => { const el = q('#m-' + k); if (el) el.addEventListener('input', e => DB.matMF[k] = e.target.value); });
+    ['fecha', 'monto', 'desde', 'hasta'].forEach(k => { const el = q('#m-' + k); if (el) el.addEventListener('input', e => DB.matMF[k] = e.target.value); });
+    const mpag = q('#m-pagado'); if (mpag) mpag.addEventListener('change', e => DB.matMF.pagado = e.target.value === '1');
     q('#mat-prev') && q('#mat-prev').addEventListener('click', () => { DB.matStep--; DB.matErr = ''; render(); });
     q('#mat-next') && q('#mat-next').addEventListener('click', () => {
       if (DB.matStep === 1) {
@@ -1493,7 +1897,6 @@ function bindView() {
       DB.matErr = ''; DB.matStep++; render();
     });
     q('#mat-save') && q('#mat-save').addEventListener('click', async () => {
-      if (!DB.matMF.monto) { DB.matErr = 'Ingresa el monto.'; render(); return; }
       let aid;
       if (DB.matApodMode === 'existente') { aid = +DB.matApodSel; }
       else {
@@ -1506,18 +1909,71 @@ function bindView() {
       const ne = { id: eid, apodId: aid, ...DB.matEF, edad: +DB.matEF.edad, codigo, usuario: '', password: '', credCreadas: false };
       DB.ests.push(ne); syncEstNuevo(ne);
       const num = 'MAT-' + anioActual() + '-' + String(DB.mats.length + 1).padStart(3, '0');
-      const nm = { id: newId, num, estId: eid, fecha: DB.matMF.fecha || hoy(), monto: +DB.matMF.monto, desde: DB.matMF.desde || hoyMes(), hasta: DB.matMF.hasta || hoyMes(), pagado: false };
+      const monto = +DB.matMF.monto || 0;
+      const desde = DB.matMF.desde || hoy();
+      const hasta = DB.matMF.hasta || hoy();
+      const pagado = DB.matMF.pagado || false;
+      const nm = { id: newId, num, estId: eid, fecha: DB.matMF.fecha || hoy(), monto, desde, hasta, pagado };
       DB.mats.push(nm); syncMatNueva(nm);
       DB.matStep = 1; DB.matApodMode = 'nuevo'; DB.matApodSel = '';
-      DB.matAF = { nombres: '', dir: '', cel: '', correo: '' }; DB.matEF = { nombres: '', edad: '', grado: '', cel: '', correo: '' }; DB.matMF = { num: '', fecha: '', monto: '', desde: '', hasta: '' }; DB.matErr = '';
-      toast('Matrícula ' + num + ' registrada. Código del estudiante: ' + codigo); render();
+      DB.matAF = { nombres: '', dir: '', cel: '', correo: '' }; DB.matEF = { nombres: '', edad: '', grado: '', cel: '', correo: '' }; DB.matMF = { num: '', fecha: '', monto: '', desde: '', hasta: '', pagado: false }; DB.matErr = '';
+      toast('Matrícula ' + num + ' registrada ✓ — Código: ' + codigo); render();
     });
   }
   if (DB.view === 'pagos') {
     q('#pf-todos') && q('#pf-todos').addEventListener('click', () => { DB.pagoFiltro = 'todos'; render(); });
     q('#pf-deuda') && q('#pf-deuda').addEventListener('click', () => { DB.pagoFiltro = 'deuda'; render(); });
     q('#pf-pagado') && q('#pf-pagado').addEventListener('click', () => { DB.pagoFiltro = 'pagado'; render(); });
-    document.querySelectorAll('.pago-btn').forEach(b => b.addEventListener('click', () => { const m = DB.mats.find(x => x.id === +b.dataset.id); if (m) { m.pagado = true; syncMatUpdate(m); toast('Pago confirmado.'); render(); } }));
+
+    // ── Abrir modal de nuevo pago ──
+    document.querySelectorAll('.add-cuota-btn').forEach(b => {
+      b.addEventListener('click', () => {
+        const matId = +b.dataset.matid, monto = +b.dataset.monto || 100;
+        abrirModalCuota(matId, monto, null);
+      });
+    });
+
+    // ── Marcar cuota como pagada ──
+    document.querySelectorAll('.cuota-pagar').forEach(b => {
+      b.addEventListener('click', async () => {
+        const qid = +b.dataset.qid;
+        const cuota = DB.cuotas.find(x => x.id === qid);
+        if (cuota) { cuota.pagado = true; await syncCuotaUpdate(cuota); toast('✓ Pago marcado como pagado.'); render(); }
+      });
+    });
+
+    // ── Deshacer pago ──
+    document.querySelectorAll('.cuota-deshacer').forEach(b => {
+      b.addEventListener('click', async () => {
+        const qid = +b.dataset.qid;
+        const cuota = DB.cuotas.find(x => x.id === qid);
+        if (cuota) { cuota.pagado = false; await syncCuotaUpdate(cuota); toast('Pago marcado como pendiente.', 'wa'); render(); }
+      });
+    });
+
+    // ── Editar cuota ──
+    document.querySelectorAll('.cuota-editar').forEach(b => {
+      b.addEventListener('click', () => {
+        const qid = +b.dataset.qid;
+        const cuota = DB.cuotas.find(x => x.id === qid);
+        if (!cuota) return;
+        abrirModalCuota(cuota.matId, 0, cuota);
+      });
+    });
+
+    // ── Eliminar cuota ──
+    document.querySelectorAll('.cuota-del').forEach(b => {
+      b.addEventListener('click', () => {
+        const qid = +b.dataset.qid;
+        const cuota = DB.cuotas.find(x => x.id === qid);
+        if (!cuota) return;
+        confirmDelete('¿Eliminar el pago del ' + fmtDate(cuota.fecha) + ' por S/ ' + cuota.monto + '?', async () => {
+          DB.cuotas = DB.cuotas.filter(x => x.id !== qid);
+          await syncCuotaDelete(qid);
+          toast('Pago eliminado.'); render();
+        });
+      });
+    });
   }
   if (DB.view === 'buscar') {
     q('#bt-est') && q('#bt-est').addEventListener('click', () => { DB.busqTipo = 'est'; DB.busqQ = ''; DB.busqSel = null; render(); });
@@ -1576,5 +2032,59 @@ function bindView() {
   }
 }
 
-// ══ INICIO ══
-render();
+
+// ══ BLOQUEO DE TECLAS INVÁLIDAS EN INPUTS ══
+// Solo números en campos numéricos; solo texto en campos de texto
+document.addEventListener('keydown', function (e) {
+  const el = e.target;
+  if (!el || !el.tagName) return;
+  const tag = el.tagName.toLowerCase();
+  if (tag !== 'input') return;
+
+  const t = el.type;
+
+  // Número puro: bloquear letras (permitir: dígitos, punto, coma, backspace, tab, delete, flechas, -)
+  if (t === 'number') {
+    const permitidas = ['Backspace', 'Delete', 'Tab', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Enter', '.', 'NumpadDecimal'];
+    const esDígito = (e.key >= '0' && e.key <= '9') || (e.code && e.code.startsWith('Numpad') && e.key >= '0' && e.key <= '9');
+    const esMinus = e.key === '-';
+    const esPermitida = permitidas.includes(e.key) || e.ctrlKey || e.metaKey;
+    if (!esDígito && !esPermitida && !esMinus) { e.preventDefault(); }
+  }
+
+  // Tel: solo dígitos, +, espacios, guión
+  if (t === 'tel') {
+    const permitidas = ['Backspace', 'Delete', 'Tab', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter'];
+    const esDígito = e.key >= '0' && e.key <= '9';
+    const esEspecial = ['+', '-', ' '].includes(e.key);
+    const esPermitida = permitidas.includes(e.key) || e.ctrlKey || e.metaKey;
+    if (!esDígito && !esEspecial && !esPermitida) { e.preventDefault(); }
+  }
+}, true);
+
+// Limpiar pegado en campos numéricos
+document.addEventListener('paste', function (e) {
+  const el = e.target;
+  if (!el || el.tagName.toLowerCase() !== 'input') return;
+  if (el.type === 'number') {
+    const txt = (e.clipboardData || window.clipboardData).getData('text');
+    if (!/^[\d.\-]+$/.test(txt.trim())) { e.preventDefault(); toast('Solo se permiten números en este campo.', 'wa'); }
+  }
+  if (el.type === 'tel') {
+    const txt = (e.clipboardData || window.clipboardData).getData('text');
+    if (!/^[\d+\-\s]+$/.test(txt.trim())) { e.preventDefault(); toast('Solo se permiten dígitos en este campo.', 'wa'); }
+  }
+}, true);
+
+// ══ INICIO — Restaurar sesión y arrancar ══
+(async function arrancar() {
+  const tipoSesion = restaurarSesion();
+  if (tipoSesion === 'admin' && DB.cfgConectado && DB.cfgUrl) {
+    // Hay sesión admin + Sheets configurado → cargar datos silenciosamente
+    render(); // mostrar dashboard inmediatamente con datos anteriores
+    const ok = await pullTodo();
+    if (ok) render(); // re-renderizar con datos actualizados de Sheets
+  } else {
+    render(); // sin sesión o sin Sheets → pantalla selector o panel cargado
+  }
+})();
