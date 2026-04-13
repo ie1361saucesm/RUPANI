@@ -166,7 +166,7 @@ async function pullTodo() {
     }));
     // Siempre conservar superadmin local si Sheets no lo tiene
     if (!DB.admins.find(a => a.esSuperAdmin)) {
-      DB.admins.unshift({ id: 1, nombres: 'Director RUPANI', usuario: 'superadmin', password: 'rupani2025', email: 'director@rupani.pe', esSuperAdmin: true });
+      DB.admins.unshift({ id: 1, nombres: 'Director RUPANI', usuario: 'Ruben', password: 'rupani2026', email: 'rchilonl15@unc.edu.pe', esSuperAdmin: true });
     }
   }
   // Apoderados
